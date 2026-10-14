@@ -48,6 +48,9 @@ struct Coordinates {
   float roll{};
 };
 
+// Protect complete coordinate updates shared by the task and button ISR.
+inline DRAM_ATTR portMUX_TYPE position_mux = portMUX_INITIALIZER_UNLOCKED;
+
 } // namespace bh
 
 #endif

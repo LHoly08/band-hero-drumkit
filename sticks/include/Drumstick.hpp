@@ -21,10 +21,14 @@ public:
 
 private:
   Coordinates m_position{};
+  bool m_sensor_interrupt_registered{};
 
   i2c_master_bus_handle_t m_bus{};
   i2c_master_dev_handle_t m_device{};
   bno085_handle_t m_sensor{};
+
+  esp_err_t start_sensor() noexcept;
+  void recover_sensor() noexcept;
 
   static void on_sensor_data(bno085_handle_t,
                              const bno085_sensor_value_t *value,
