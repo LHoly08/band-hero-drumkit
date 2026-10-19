@@ -56,16 +56,64 @@ the ESP-NOW channel is a constant in `main/main.cpp`.
 
 ## Current behavior
 
-Startup initializes NVS, Wi-Fi station mode, and ESP-NOW, and registers the
-configured receiver as an unencrypted peer. The local and receiver MAC addresses
-are printed to the USB console. The XIAO RF switch is configured for its onboard
-antenna (GPIO 3 low, GPIO 14 low). No access-point connection is needed.
+Startup initializes NVS, Wi-Fi station mode, and ESP-NOW. Hit transmission is
+currently disabled; hits are printed to the USB console.
 
 The BNO085 is configured at 100 kHz I2C with a 20 ms clock-stretch allowance.
-The driver requests rotation-vector reports at 100 Hz; `Drumstick::loop()`
-services the sensor, and its callback updates roll, pitch, and yaw in radians.
-At most 10 times per second, the callback prints the angles as decimal floats to the
-USB serial console, for example `Roll: 0.123  Pitch: -0.456  Yaw: 1.234 (rad)`.
+The driver requests rotation-vector and calibrated-gyroscope reports at 100 Hz.
+The existing gyro detector arms on a downstroke and fires as it slows or reverses.
+Its thresholds and roll-dependent axis selection remain in `main/Drumstick.cpp`.
+`HIT_SPEED_SCALE` preserves its existing tuning and is independent of the sphere
+radius. The old acceleration and cooldown constants are not used by this detector.
+
+## Shared chest-origin position experiment
+
+`include/SpherePosition.hpp` contains `SphereConfig`: the default radius is
+**0.275 m (27.5 cm)**, the chest center is `{0, 0, 0}`, and `tip_axis` is sensor
+**+X**. Change `radius` to `0.27f` for 27 cm. Change `tip_axis` if a different
+sensor-local axis points along the stick toward its tip, for example `{0, -1, 0}`
+for -Y. Verify the mounting before judging the position estimate.
+
+Both sticks use the same model, with no left/right assignment. The playing
+coordinate system is **X right, Y forward, Z up**, in meters. The estimate is
+`chest center + radius * calibrated stick direction`; it does not integrate
+acceleration or measure hand translation. Parallel sticks still have the same
+estimated position when their references agree.
+
+To try it:
+
+1. Build and flash the stick, then open its serial monitor.
+2. Hold the stick level, pointing toward your intended forward direction.
+   Press and release the existing reset button. With the current pull-up and
+   rising-edge wiring, reset occurs on release for a button connected to ground.
+   Hold the pose until `XYZ calibrated` appears.
+3. Calibrate the second stick pointing in the same direction. Reset sets heading;
+   gravity still defines up. It does not measure the chest location or set the
+   tip to the sphere center. The forward tip should read about `(0, 0.275, 0)`.
+4. Make repeated strokes at each intended drum. Each hit prints both lines:
+
+   ```text
+   Hit! Roll: 0.000  Pitch: 0.000  Yaw: 0.000 (rad)
+   HitXYZ! X: 0.000  Y: 0.275  Z: 0.000 (m)
+   ```
+
+   These numbers illustrate a level forward pose; actual strike poses differ.
+   Leftward poses should have negative X, rightward positive X, and downward
+   poses negative Z. Twisting around the stick's length should not change XYZ.
+5. Record 20-30 hits per intended drum and compare their XYZ spread before
+   choosing drum centers and tolerances for the base. Test both hands.
+
+Hits are suppressed until calibration, and again after sensor recovery until
+you recalibrate. Near-vertical reset poses cannot define a heading; keep reset
+pending by pointing level until calibration succeeds. Invalid orientation
+reports or reports older than 50 ms disarm the detector. Hit positions use the
+latest valid orientation serviced by the firmware, not interpolated strike-time
+poses. The hardware tests will determine whether the model and timing work well.
+
+`test/stick_hit_test` matches the `HitXYZ!` line against configurable XYZ targets
+in meters and ignores the separate angle line. See `test/README.md` for setup.
+A base config loader and wireless XYZ packets are not part of this serial-only
+experiment.
 
 ## Capture a crash
 
@@ -80,8 +128,11 @@ Press Ctrl+] to exit the monitor after the crash. The complete output stays in
 `crash.log`. The panic handler waits five seconds before rebooting so the dump
 remains visible longer. This delay helps capture the error; it does not fix its cause.
 
-ESP-NOW is ready for use, but the firmware does not yet transmit sensor packets.
-Define a packet format shared with the base firmware before adding sends.
+`Drumstick::detect_hit()` contains a commented-out ESP-NOW send. Its existing
+payload is a `Coordinates` snapshot (pitch, yaw, roll in radians) followed by a
+float for the detector's peak scaled gyro speed; it does not include XYZ.
+The receiver must use the same layout. Register `ReceiverMAC`
+as a peer and configure the radio channel and antenna before enabling the send.
 
 ## References
 

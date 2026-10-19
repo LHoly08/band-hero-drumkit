@@ -2,7 +2,11 @@
 #define BH_UTILS
 
 #include <array>
+#include <cmath>
 #include <cstdint>
+#include <numbers>
+
+#include "SpherePosition.hpp"
 
 #include "driver/gpio.h"
 #include "esp_attr.h"
@@ -39,17 +43,39 @@ struct ButtonDebounce {
 // Accessed only by the serialized GPIO ISRs; persist across mode changes.
 inline DRAM_ATTR ButtonDebounce reset_button_debounce{};
 
-// Defined out of line so Xtensa places ISR literals with the IRAM code.
-void reset_button_pressed(void *args) noexcept;
-
 struct Coordinates {
   float pitch{};
   float yaw{};
   float roll{};
+
+  Coordinates operator-(const Coordinates &other) const {
+    return {.pitch = this->pitch - other.pitch,
+            .yaw = this->yaw - other.yaw,
+            .roll = this->roll - other.roll};
+  }
 };
 
 // Protect complete coordinate updates shared by the task and button ISR.
+inline DRAM_ATTR portMUX_TYPE rotation_mux = portMUX_INITIALIZER_UNLOCKED;
 inline DRAM_ATTR portMUX_TYPE position_mux = portMUX_INITIALIZER_UNLOCKED;
+
+enum class Direction : std::uint8_t {
+  PositiveReal = 0,
+  PositiveImag,
+  NegativeReal,
+  NegativeImag,
+};
+
+inline Direction closest_direction(float radians) noexcept {
+  constexpr float HALF_PI = std::numbers::pi_v<float> * 0.5;
+  constexpr float TWO_PI = std::numbers::pi_v<float> * 2;
+
+  const float angle = std::remainder(radians, TWO_PI);
+  const std::int32_t quadrant =
+      static_cast<std::int32_t>(std::round(angle / HALF_PI));
+
+  return static_cast<Direction>(quadrant & 0b11);
+}
 
 } // namespace bh
 

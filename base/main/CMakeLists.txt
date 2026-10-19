@@ -1,7 +1,8 @@
 idf_component_register(
-    SRCS "src/main.cpp"
-    INCLUDE_DIRS "include"
-    REQUIRES nvs_flash esp_now 
+    SRCS "main.cpp"
+    INCLUDE_DIRS "../include"
+    REQUIRES nvs_flash esp_wifi esp_event esp_netif esp_timer
+             esp_driver_i2c esp_driver_gpio u8g2 freertos 
 )
 
-target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_20)
+target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_26)

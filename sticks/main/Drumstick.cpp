@@ -1,14 +1,18 @@
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 
 #include "Drumstick.hpp"
 
+#include "Utils.hpp"
+#include "bno085.h"
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_now.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
 
@@ -19,16 +23,56 @@
 #include "freertos/projdefs.h"
 #include "freertos/task.h"
 
+#include "hal/gpio_types.h"
+
 namespace bh {
 
 namespace {
+
+// Preserve the existing detector's tuning independently of the position model.
+// This is a legacy gyro scale, not the sphere radius in SphereConfig.
+constexpr float HIT_SPEED_SCALE = 3.0f;
+constexpr float HIT_THRESHOLD_ANGULAR = 6.0f;
+constexpr float HIT_RELEASE_THRESHOLD_ANGULAR = 0.5f;
+
+constexpr std::uint32_t MAX_ORIENTATION_AGE_US = 50000;
+constexpr std::uint32_t SENSOR_READY_EVENT = 1u << 0;
+constexpr std::uint32_t RESET_ORIENTATION_EVENT = 1u << 1;
+
 void IRAM_ATTR sensor_data_ready(void *context) noexcept {
   BaseType_t task_woken = pdFALSE;
-  vTaskNotifyGiveFromISR(static_cast<TaskHandle_t>(context), &task_woken);
+  xTaskNotifyFromISR(static_cast<TaskHandle_t>(context), SENSOR_READY_EVENT,
+                     eSetBits, &task_woken);
   if (task_woken) {
     portYIELD_FROM_ISR();
   }
 }
+
+enum class Condition : std::uint8_t {
+  sensor_interrupt_registered = 0,
+  has_orientation,
+  hit_armed,
+  reset_pending,
+};
+
+template <bool flag, Condition... Conditions>
+inline static constexpr void set_condition(std::uint8_t &conditions) {
+  // Create bit mask with 1 on every condition that will be changed
+  constexpr auto bitMask =
+      (0u | ... | (1u << static_cast<std::uint8_t>(Conditions)));
+
+  if constexpr (flag) {
+    conditions |= bitMask;
+  } else {
+    conditions &= ~bitMask;
+  }
+}
+
+template <Condition C>
+inline static constexpr bool get_condition(std::uint8_t conditions) {
+  return conditions & (1u << static_cast<std::uint8_t>(C));
+}
+
 } // namespace
 
 bool IRAM_ATTR ButtonDebounce::accept() noexcept {
@@ -42,14 +86,14 @@ bool IRAM_ATTR ButtonDebounce::accept() noexcept {
   return true;
 }
 
-void IRAM_ATTR reset_button_pressed(void *args) noexcept {
+void IRAM_ATTR Drumstick::reset_button_pressed(void *args) noexcept {
   if (args != nullptr && reset_button_debounce.accept()) {
-    Coordinates *position = static_cast<Coordinates *>(args);
-    portENTER_CRITICAL_ISR(&position_mux);
-    position->pitch = 0;
-    position->yaw = 0;
-    position->roll = 0;
-    portEXIT_CRITICAL_ISR(&position_mux);
+    BaseType_t task_woken = pdFALSE;
+    xTaskNotifyFromISR(static_cast<TaskHandle_t>(args), RESET_ORIENTATION_EVENT,
+                       eSetBits, &task_woken);
+    if (task_woken) {
+      portYIELD_FROM_ISR();
+    }
   }
 }
 
@@ -97,8 +141,9 @@ Drumstick::Drumstick() noexcept {
   // Wake the task immediately when the active-low data-ready signal asserts.
   ESP_ERROR_CHECK(gpio_set_intr_type(GPIO_NUM_2, GPIO_INTR_NEGEDGE));
   ESP_ERROR_CHECK(gpio_isr_handler_add(GPIO_NUM_2, sensor_data_ready,
-                                      xTaskGetCurrentTaskHandle()));
-  m_sensor_interrupt_registered = true;
+                                       xTaskGetCurrentTaskHandle()));
+
+  set_condition<true, Condition::sensor_interrupt_registered>(m_condition);
 
   {
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -114,18 +159,25 @@ Drumstick::Drumstick() noexcept {
 
     cfg.pin_bit_mask = 1ULL << STATE_BUTTON_PIN;
     cfg.mode = GPIO_MODE_INPUT;
-    cfg.pull_up_en = GPIO_PULLUP_DISABLE;
-    cfg.pull_down_en = GPIO_PULLDOWN_ENABLE;
+    cfg.pull_up_en = GPIO_PULLUP_ENABLE;
+    cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
     cfg.intr_type = GPIO_INTR_POSEDGE;
 
     ESP_ERROR_CHECK(gpio_config(&cfg));
   }
 
   ESP_ERROR_CHECK(gpio_isr_handler_add(STATE_BUTTON_PIN, reset_button_pressed,
-                                       &m_position));
+                                       xTaskGetCurrentTaskHandle()));
 }
 
 esp_err_t Drumstick::start_sensor() noexcept {
+  set_condition<false, Condition::has_orientation, Condition::hit_armed>(
+      m_condition);
+  m_last_hit_us = 0;
+  m_top_hit_speed = 0.0f;
+  m_tracking.invalidate();
+  ESP_LOGI("sticks", "Point level and forward, then press/release reset to "
+                     "calibrate chest-relative XYZ (meters)");
   esp_err_t result =
       bno085_init(nullptr, m_device, GPIO_NUM_2, GPIO_NUM_21, &m_sensor);
   if (result != ESP_OK) {
@@ -138,8 +190,20 @@ esp_err_t Drumstick::start_sensor() noexcept {
     result =
         bno085_enable_sensor(m_sensor, BNO085_SENSOR_ROTATION_VECTOR, 10000);
   }
+  /*
+   // Currently not needed
+    if (result == ESP_OK) {
+      result = bno085_enable_sensor(m_sensor, BNO085_SENSOR_LINEAR_ACCELERATION,
+                                  10000);
+    }
+  */
+  if (result == ESP_OK) {
+    result = bno085_enable_sensor(m_sensor, BNO085_SENSOR_GYROSCOPE_CALIBRATED,
+                                  10000);
+  }
   // Reinitialization configures INT as a plain input, so restore its interrupt.
-  if (result == ESP_OK && m_sensor_interrupt_registered) {
+  if (result == ESP_OK &&
+      get_condition<Condition::sensor_interrupt_registered>(m_condition)) {
     result = gpio_set_intr_type(GPIO_NUM_2, GPIO_INTR_NEGEDGE);
     if (result == ESP_OK) {
       result = gpio_intr_enable(GPIO_NUM_2);
@@ -195,29 +259,157 @@ void Drumstick::on_sensor_data(bno085_handle_t,
                                const bno085_sensor_value_t *value,
                                void *context) noexcept {
   auto *stick = static_cast<Drumstick *>(context);
-  if (value->sensor_id != BNO085_SENSOR_ROTATION_VECTOR) [[unlikely]] {
+  switch (value->sensor_id) {
+  case BNO085_SENSOR_GYROSCOPE_CALIBRATED: {
+    stick->detect_hit(*value);
     return;
   }
-  Coordinates *stickPosition = &stick->m_position;
+  case BNO085_SENSOR_LINEAR_ACCELERATION: {
+    return;
+  }
+  case BNO085_SENSOR_ROTATION_VECTOR: {
+    stick->update_position(*value);
+    return;
+  }
+  default: {
+    return;
+  }
+  }
+}
 
-  const auto &q = value->data.quaternion;
+void Drumstick::update_position(const bno085_sensor_value_t &value) noexcept {
+
+  const auto &q = value.data.quaternion;
+  const bool reset = get_condition<Condition::reset_pending>(m_condition);
+  if (!m_tracking.update({q.real, q.i, q.j, q.k}, reset)) {
+    set_condition<false, Condition::has_orientation, Condition::hit_armed>(
+        m_condition);
+    m_top_hit_speed = 0.0f;
+    return;
+  }
 
   Coordinates moved;
   bno085_quaternion_to_euler(q.i, q.j, q.k, q.real, &moved.roll, &moved.pitch,
                              &moved.yaw);
 
+  // Keep the request pending until an orientation report actually arrives.
+  if (reset) {
+    m_offset = moved;
+    m_top_hit_speed = 0.0f;
+    set_condition<false, Condition::reset_pending>(m_condition);
+    const auto p = m_tracking.position();
+    ESP_LOGI("sticks",
+             "XYZ calibrated: X=%.3f Y=%.3f Z=%.3f m "
+             "(right, forward, up)",
+             p.x, p.y, p.z);
+  }
+
+  portENTER_CRITICAL(&rotation_mux);
+  m_rotation = moved;
+  portEXIT_CRITICAL(&rotation_mux);
   portENTER_CRITICAL(&position_mux);
-  *stickPosition = moved;
+  m_position = m_tracking.position();
   portEXIT_CRITICAL(&position_mux);
+  m_orientation_us = static_cast<std::uint32_t>(esp_timer_get_time());
+  set_condition<true, Condition::has_orientation>(m_condition);
+}
+
+void Drumstick::detect_hit(const bno085_sensor_value_t &value) noexcept {
+  const auto now_us = static_cast<std::uint32_t>(esp_timer_get_time());
+  if (get_condition<Condition::reset_pending>(m_condition) ||
+      !get_condition<Condition::has_orientation>(m_condition) ||
+      std::uint32_t(now_us - m_orientation_us) > MAX_ORIENTATION_AGE_US)
+      [[unlikely]] {
+    set_condition<false, Condition::hit_armed>(m_condition);
+    m_top_hit_speed = 0.0f;
+    return;
+  }
+  const auto &g = value.data.gyroscope_calibrated;
+  float speed = HIT_SPEED_SCALE;
+
+  portENTER_CRITICAL(&rotation_mux);
+  const Coordinates packet_coords = m_rotation - m_offset;
+  portEXIT_CRITICAL(&rotation_mux);
+
+  switch (closest_direction(packet_coords.roll)) {
+  case Direction::PositiveReal: {
+    speed *= g.y;
+    break;
+  }
+  case Direction::PositiveImag: {
+    speed *= -g.z;
+    break;
+  }
+  case Direction::NegativeReal: {
+    speed *= -g.y;
+    break;
+  }
+  case Direction::NegativeImag: {
+    speed *= g.z;
+    break;
+  }
+  }
+
+  if (speed <= -HIT_THRESHOLD_ANGULAR) [[likely]] {
+    set_condition<true, Condition::hit_armed>(m_condition);
+    m_top_hit_speed = (-speed > m_top_hit_speed) ? -speed : m_top_hit_speed;
+    return;
+  }
+
+  if (!(speed >= -HIT_RELEASE_THRESHOLD_ANGULAR &&
+        get_condition<Condition::hit_armed>(m_condition))) {
+    return;
+  }
+  set_condition<false, Condition::hit_armed>(m_condition);
+
+  struct {
+    Coordinates coords{};
+    float speed{};
+  } packet{.coords = packet_coords, .speed = m_top_hit_speed};
+
+  // std::printf("X: %.3f Y: %.3f Z: %.3f \n", g.x, g.y, g.z);
+  std::printf("Hit! Roll: %.3f  Pitch: %.3f  Yaw: %.3f (rad)\n",
+              packet.coords.roll, packet.coords.pitch, packet.coords.yaw);
+  // Separate line preserves the existing angle-based serial matcher format.
+  portENTER_CRITICAL(&position_mux);
+  const Vector3 position = m_position;
+  portEXIT_CRITICAL(&position_mux);
+  std::printf("HitXYZ! X: %.3f  Y: %.3f  Z: %.3f (m)\n", position.x, position.y,
+              position.z);
+
+  // Register ReceiverMAC as an ESP-NOW peer before enabling transmission.
+  // const esp_err_t status = esp_now_send(
+  //     ReceiverMAC.data(), reinterpret_cast<const std::uint8_t *>(&packet),
+  //     sizeof(packet));
+  // if (status != ESP_OK) {
+  //   ESP_LOGW("sticks", "Hit send failed: %s", esp_err_to_name(status));
+  // }
+
+  m_top_hit_speed = std::abs(speed);
 }
 
 void Drumstick::loop() noexcept {
-  // TickType_t is 32 bits on this target. Unsigned subtraction handles rollover.
+  // TickType_t is 32 bits on this target. Unsigned subtraction handles
+  // rollover.
   constexpr TickType_t connection_check_ticks = pdMS_TO_TICKS(1000);
   TickType_t last_connection_check_tick = xTaskGetTickCount();
   std::uint32_t consecutive_probe_failures{};
+  std::uint32_t events{};
 
 infinite_loop:
+
+  // Merge events received while sleeping with any that arrived since waking.
+  std::uint32_t pending_events{};
+  (void)xTaskNotifyWait(0, UINT32_MAX, &pending_events, 0);
+  events |= pending_events;
+  if (events & RESET_ORIENTATION_EVENT) {
+    m_tracking.invalidate();
+    m_top_hit_speed = 0.0f;
+    set_condition<true, Condition::reset_pending>(m_condition);
+    set_condition<false, Condition::has_orientation, Condition::hit_armed>(
+        m_condition);
+  }
+  events = 0;
 
   if (m_sensor) {
     bno085_service(m_sensor);
@@ -234,7 +426,8 @@ infinite_loop:
       if (!m_sensor) {
         recover_sensor();
       }
-    } else if (connection == ESP_ERR_NOT_FOUND || connection == ESP_ERR_TIMEOUT ||
+    } else if (connection == ESP_ERR_NOT_FOUND ||
+               connection == ESP_ERR_TIMEOUT ||
                connection == ESP_ERR_INVALID_STATE) {
       ++consecutive_probe_failures;
       if (consecutive_probe_failures >= 3) {
@@ -244,34 +437,16 @@ infinite_loop:
     }
     last_connection_check_tick = xTaskGetTickCount();
   }
-  // Copy shared coordinates under the lock, then print outside it.
-  portENTER_CRITICAL(&position_mux);
-  const Coordinates snapshot = m_position;
-  portEXIT_CRITICAL(&position_mux);
-  std::printf("Roll: %.3f  Pitch: %.3f  Yaw: %.3f (rad)\n", snapshot.roll,
-              snapshot.pitch, snapshot.yaw);
   // Sleep only while no packet is ready. An INT edge wakes us immediately;
   // the timeout permits a connection check even after a physical disconnect.
   if (!m_sensor || gpio_get_level(GPIO_NUM_2) != 0) {
     const TickType_t elapsed_ticks =
         xTaskGetTickCount() - last_connection_check_tick;
     if (elapsed_ticks < connection_check_ticks) {
-      (void)ulTaskNotifyTake(pdTRUE, connection_check_ticks - elapsed_ticks);
+      (void)xTaskNotifyWait(0, UINT32_MAX, &events,
+                            connection_check_ticks - elapsed_ticks);
     }
   }
-  /*
-    esp_err_t status =
-        esp_now_send(ReceiverMAC.data(),
-                     reinterpret_cast<const std::uint8_t *>(&val), sizeof(val));
-
-    for (unsigned char i{}; i < 4 && status != ESP_OK; ++i) {
-
-      status =
-          esp_now_send(m_references.macAddress.data(),
-                       reinterpret_cast<const std::uint8_t *>(&val),
-    sizeof(val));
-    }
-  */
   goto infinite_loop;
 }
 
