@@ -5,14 +5,13 @@
 #include "Utils.hpp"
 
 #include "driver/gpio.h"
+
 #include <cmath>
 #include <cstdint>
 #include <utility>
 #include <variant>
 
 namespace bh {
-
-namespace {
 
 // Thickness in meters.
 inline float Tolerance = 0.05f;
@@ -25,6 +24,7 @@ enum class PadType : std::uint8_t {
 
 class mp3File {
 public:
+  mp3File() noexcept = default;
   mp3File(std::string_view file) noexcept;
   ~mp3File() noexcept;
   mp3File(const mp3File &) = delete;
@@ -53,17 +53,19 @@ template <PadType Type> struct Alternate<Type, true> {
   mp3File m_alternateAudio{};
 };
 
-} // namespace
+namespace detail {
+Vec3 padAxis(Vec3 position, float tilt) noexcept;
+} // namespace detail
 
 // ----- Pads -----
 
 template <PadType Type, bool hasAlternate = true> class Pad {
 public:
-  using Alternate = Alternate<Type, hasAlternate>;
+  using Alternate = bh::Alternate<Type, hasAlternate>;
 
   Pad(bh::Vec3 position, float radius, float tilt, mp3File &&normalAudio,
       Alternate &&alternate) noexcept;
-  ~Pad() noexcept;
+  ~Pad() noexcept = default;
   Pad(const Pad &) = delete;
   Pad &operator=(const Pad &) = delete;
   Pad(Pad &&other) noexcept;
@@ -78,7 +80,9 @@ public:
     }
 
     const float radialSquared = d.dot(d) - h * h;
-    m_alternate.m_lastRadialSquared = radialSquared;
+    if constexpr (hasAlternate) {
+      m_alternate.m_lastRadialSquared = radialSquared;
+    }
     return radialSquared <= m_radiusSquared;
   }
 
@@ -93,6 +97,14 @@ private:
 };
 
 // ----- Definitions -----
+
+template <PadType Type, bool hasAlternate>
+Pad<Type, hasAlternate>::Pad(Vec3 position, float radius, float tilt,
+                            mp3File &&normalAudio,
+                            Alternate &&alternate) noexcept
+    : m_position{position}, m_axis{detail::padAxis(position, tilt)},
+      m_radiusSquared{radius * radius}, m_normalAudio{std::move(normalAudio)},
+      m_alternate{std::move(alternate)} {}
 
 template <PadType Type, bool hasAlternate>
 Pad<Type, hasAlternate>::Pad(Pad &&other) noexcept
@@ -117,14 +129,14 @@ Pad<Type, hasAlternate>::operator=(Pad &&other) noexcept {
 
 template <PadType Type, bool hasAlternate>
 void Pad<Type, hasAlternate>::play() noexcept {
-  if constexpr (Type == PadType::Drum) {
+  if constexpr (hasAlternate && Type == PadType::Drum) {
     if (m_alternate.m_lastRadialSquared >
         m_alternate.m_alternateRadiusSquared) {
       // Play Alternate Audio
       return;
     }
 
-  } else if constexpr (Type == PadType::Cymbal) {
+  } else if constexpr (hasAlternate && Type == PadType::Cymbal) {
     if (m_alternate.m_lastRadialSquared <=
         m_alternate.m_alternateRadiusSquared) {
       // Play Alternate Audio

@@ -1,3 +1,4 @@
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <utility>
@@ -26,50 +27,18 @@ constexpr auto fastInverseSquareRoot = [](float number) -> float {
 
 } // namespace
 
-template <bh::PadType Type>
-bh::Pad<Type, true>::Pad(bh::Vec3 position, float radius, float tilt,
-                         bh::mp3File &&normalAudio,
-                         bh::Alternate &&alternate) noexcept
-    : m_position{position}, m_axis{[position, tilt]() -> Vec3 {
-        const float sumSides =
-            position.x * position.x + position.y * position.y;
+Vec3 detail::padAxis(Vec3 position, float tilt) noexcept {
+  const float sumSides = position.x * position.x + position.y * position.y;
 
-        // At the XY origin there is no inward direction, so stay horizontal.
-        if (sumSides == 0.0f) {
-          return {0.0f, 0.0f, 1.0f};
-        }
+  // At the XY origin there is no inward direction, so stay horizontal.
+  if (sumSides == 0.0f) {
+    return {0.0f, 0.0f, 1.0f};
+  }
 
-        const float inverseDistance = fastInverseSquareRoot(sumSides);
-
-        const float lean = std::sin(tilt);
-        return {-(position.x * inverseDistance) * lean,
-                -(position.y * inverseDistance) * lean, std::cos(tilt)};
-      }()},
-      m_radiusSquared{radius * radius}, m_normalAudio{std::move(normalAudio)},
-      m_alternate{.m_alternateAudio = std::move(alternate.m_alternateAudio),
-                  .m_alternateRadiusSquared =
-                      alternate.m_alternateRadiusSquared} {}
-
-template <bh::PadType Type>
-bh::Pad<Type, false>::Pad(bh::Vec3 position, float radius, float tilt,
-                          bh::mp3File &&normalAudio,
-                          bh::Alternate &&alternate) noexcept
-    : m_position{position}, m_axis{[position, tilt]() -> Vec3 {
-        const float sumSides =
-            position.x * position.x + position.y * position.y;
-
-        // At the XY origin there is no inward direction, so stay horizontal.
-        if (sumSides == 0.0f) {
-          return {0.0f, 0.0f, 1.0f};
-        }
-
-        const float inverseDistance = fastInverseSquareRoot(sumSides);
-
-        const float lean = std::sin(tilt);
-        return {-(position.x * inverseDistance) * lean,
-                -(position.y * inverseDistance) * lean, std::cos(tilt)};
-      }()},
-      m_radiusSquared{radius * radius}, m_normalAudio{std::move(normalAudio)},
-      m_alternate{} {}
+  const float inverseDistance = fastInverseSquareRoot(sumSides);
+  const float lean = std::sin(tilt);
+  return {-(position.x * inverseDistance) * lean,
+          -(position.y * inverseDistance) * lean, std::cos(tilt)};
+}
 
 } // namespace bh

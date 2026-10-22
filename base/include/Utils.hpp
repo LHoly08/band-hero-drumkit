@@ -1,6 +1,7 @@
 #ifndef BH_UTIL
 #define BH_UTIL
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <string_view>
@@ -15,8 +16,8 @@ enum class State : std::uint32_t {
 };
 
 using AtomicState = std::atomic<State>;
-static_assert(AtomicState::is_always_lock_free);
-static_assert(std::atomic<std::uint32_t>::is_always_lock_free);
+// ESP-IDF's PSRAM workaround can use software-backed atomics on Xtensa.
+// State access must be atomic, but need not always be lock-free.
 
 using MAC = std::array<std::uint8_t, 6>;
 

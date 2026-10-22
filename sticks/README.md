@@ -2,7 +2,8 @@
 
 ESP-IDF firmware for a Seeed Studio XIAO ESP32-C6, using the
 `rinku404/bno085` component (pinned to 1.2.0) and ESP-NOW.
-Requires ESP-IDF 5.5 or newer and a compiler supporting C++26.
+Requires CMake 3.31 or newer, ESP-IDF 5.5 or newer, and a compiler
+supporting C++26.
 The project adds the upstream component's missing I2C/GPIO driver dependencies
 for ESP-IDF 6 without editing downloaded component files.
 
@@ -49,22 +50,26 @@ idf.py -DMAC=aabbccddeeff build
 ```
 
 `MAC` is the receiver's Wi-Fi station MAC written as 12 hex digits without colons.
-It defaults to `ffffffffffff` (broadcast); it does not change this board's MAC.
-The receiver must use channel 1. CMake remembers the MAC between builds.
-GPIOs and the sensor address are constants in `main/Drumstick.cpp`;
-the ESP-NOW channel is a constant in `main/main.cpp`.
+It defaults to `000000000000`, a placeholder; it does not change this board's MAC.
+CMake remembers the MAC between builds. GPIOs, the sensor address, and Wi-Fi
+initialization are in `main/Drumstick.cpp`; the reset button pin is in
+`include/Utils.hpp`. The firmware does not explicitly select a Wi-Fi channel.
+Before enabling wireless transmission, configure both sender and receiver to
+use the same channel.
 
 ## Current behavior
 
-Startup initializes NVS, Wi-Fi station mode, and ESP-NOW. Hit transmission is
-currently disabled; hits are printed to the USB console.
+`main/main.cpp` constructs `bh::Drumstick` and runs its loop. The constructor
+initializes NVS, the event loop, the sensor, Wi-Fi station mode, and ESP-NOW.
+Hit transmission is currently disabled; hits are printed to the USB console.
 
 The BNO085 is configured at 100 kHz I2C with a 20 ms clock-stretch allowance.
 The driver requests rotation-vector and calibrated-gyroscope reports at 100 Hz.
 The existing gyro detector arms on a downstroke and fires as it slows or reverses.
 Its thresholds and roll-dependent axis selection remain in `main/Drumstick.cpp`.
 `HIT_SPEED_SCALE` preserves its existing tuning and is independent of the sphere
-radius. The old acceleration and cooldown constants are not used by this detector.
+radius. The reset button uses a 200 ms debounce window, controlled by
+`BUTTON_DEBOUNCE_MS` in `include/Utils.hpp`.
 
 ## Shared chest-origin position experiment
 
@@ -93,7 +98,7 @@ To try it:
 4. Make repeated strokes at each intended drum. Each hit prints both lines:
 
    ```text
-   Hit! Roll: 0.000  Pitch: 0.000  Yaw: 0.000 (rad)
+   Hit! Roll: 0.000  Pitch: 0.000  Yaw: 0.000 (rad), Speed: 6.000
    HitXYZ! X: 0.000  Y: 0.275  Z: 0.000 (m)
    ```
 
@@ -110,10 +115,9 @@ reports or reports older than 50 ms disarm the detector. Hit positions use the
 latest valid orientation serviced by the firmware, not interpolated strike-time
 poses. The hardware tests will determine whether the model and timing work well.
 
-`test/stick_hit_test` matches the `HitXYZ!` line against configurable XYZ targets
-in meters and ignores the separate angle line. See `test/README.md` for setup.
-A base config loader and wireless XYZ packets are not part of this serial-only
-experiment.
+Capture the `HitXYZ!` lines with the serial monitor when comparing strike
+positions. A base config loader and wireless XYZ packets are
+not part of this serial-only experiment.
 
 ## Capture a crash
 
@@ -133,6 +137,13 @@ payload is a `Coordinates` snapshot (pitch, yaw, roll in radians) followed by a
 float for the detector's peak scaled gyro speed; it does not include XYZ.
 The receiver must use the same layout. Register `ReceiverMAC`
 as a peer and configure the radio channel and antenna before enabling the send.
+
+## C++ namespace convention
+
+Follow the [drumkit namespace convention](../README.md#c-namespace-convention):
+qualify symbols from other files and keep same-file names unqualified where
+C++ permits. Shared types in `Utils.hpp` and `SpherePosition.hpp` use `bh::`
+when referenced from `Drumstick.hpp` or `Drumstick.cpp`.
 
 ## References
 
