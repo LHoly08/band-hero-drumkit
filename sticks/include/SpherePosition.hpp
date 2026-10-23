@@ -20,7 +20,7 @@ struct Quaternion {
 
 struct SphereConfig {
   // Model parameters, in meters. Both sticks use the same chest origin.
-  float radius{0.275f};
+  static constexpr float radius{static_cast<float>(BH_RADIUS)};
   Vector3 center{};
   // Sensor-local axis pointing toward the tip. Change for your actual mounting.
   Vector3 tip_axis{1.0f, 0.0f, 0.0f};
@@ -44,10 +44,9 @@ public:
     const float norm2 = q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z;
     const auto axis = m_config.tip_axis;
     const float axis2 = axis.x * axis.x + axis.y * axis.y + axis.z * axis.z;
-    if (!std::isfinite(norm2) || norm2 < 1e-12f ||
-        !std::isfinite(axis2) || axis2 < 1e-12f ||
-        !std::isfinite(m_config.radius) || m_config.radius <= 0.0f ||
-        !std::isfinite(m_config.center.x) ||
+    if (!std::isfinite(norm2) || norm2 < 1e-12f || !std::isfinite(axis2) ||
+        axis2 < 1e-12f || !std::isfinite(m_config.radius) ||
+        m_config.radius <= 0.0f || !std::isfinite(m_config.center.x) ||
         !std::isfinite(m_config.center.y) ||
         !std::isfinite(m_config.center.z)) {
       return false;

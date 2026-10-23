@@ -43,15 +43,17 @@ or separate build directory is needed.
 ESP-IDF downloads the managed BNO085 component during configuration;
 commit `main/idf_component.yml` and `dependencies.lock` to preserve its version.
 
-The receiver MAC is the only custom CMake argument:
+The receiver MAC and sphere radius are custom CMake arguments:
 
 ```sh
-idf.py -DMAC=aabbccddeeff build
+idf.py -DMAC=aabbccddeeff -DRADIUS=0.275 build
 ```
 
 `MAC` is the receiver's Wi-Fi station MAC written as 12 hex digits without colons.
 It defaults to `000000000000`, a placeholder; it does not change this board's MAC.
-CMake remembers the MAC between builds. GPIOs, the sensor address, and Wi-Fi
+`RADIUS` is the sphere radius in meters and defaults to `0.275` (27.5 cm).
+Pass a number without a unit suffix, for example `-DRADIUS=0.27` for 27 cm.
+CMake remembers both values between builds. GPIOs, the sensor address, and Wi-Fi
 initialization are in `main/Drumstick.cpp`; the reset button pin is in
 `include/Utils.hpp`. The firmware does not explicitly select a Wi-Fi channel.
 Before enabling wireless transmission, configure both sender and receiver to
@@ -75,7 +77,7 @@ radius. The reset button uses a 200 ms debounce window, controlled by
 
 `include/SpherePosition.hpp` contains `SphereConfig`: the default radius is
 **0.275 m (27.5 cm)**, the chest center is `{0, 0, 0}`, and `tip_axis` is sensor
-**+X**. Change `radius` to `0.27f` for 27 cm. Change `tip_axis` if a different
+**+X**. Build with `-DRADIUS=0.27` for 27 cm. Change `tip_axis` if a different
 sensor-local axis points along the stick toward its tip, for example `{0, -1, 0}`
 for -Y. Verify the mounting before judging the position estimate.
 

@@ -23,7 +23,12 @@ if(NOT MAC_LENGTH EQUAL 12 OR NOT MAC MATCHES "^[0-9A-Fa-f]+$")
     message(FATAL_ERROR "MAC must contain exactly 12 hexadecimal digits, without colons")
 endif()
 
-target_compile_definitions(${COMPONENT_LIB} PRIVATE BH_MAC=0x${MAC}ULL)
+set(RADIUS "0.275" CACHE STRING "Sphere radius in meters")
+
+target_compile_definitions(${COMPONENT_LIB} PRIVATE
+    BH_MAC=0x${MAC}ULL
+    BH_RADIUS=${RADIUS}
+)
 
 target_compile_features(${COMPONENT_LIB} PRIVATE cxx_std_26)
 

@@ -4,8 +4,9 @@
 #include "Queue.hpp"
 #include "Utils.hpp"
 
-#include "driver/gpio.h"
+#include "hal/gpio_types.h"
 
+#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <utility>
@@ -22,35 +23,11 @@ enum class PadType : std::uint8_t {
   Pedal,
 };
 
-class mp3File {
-public:
-  mp3File() noexcept = default;
-  mp3File(std::string_view file) noexcept;
-  ~mp3File() noexcept;
-  mp3File(const mp3File &) = delete;
-  mp3File &operator=(const mp3File &) = delete;
-  mp3File(mp3File &&other) noexcept
-      : m_file{std::exchange(other.m_file, nullptr)},
-        m_size{std::exchange(other.m_size, 0)} {}
-  mp3File &operator=(mp3File &&other) noexcept {
-    if (this != &other) {
-      m_file = std::exchange(other.m_file, nullptr);
-      m_size = std::exchange(other.m_size, 0);
-    }
-    return *this;
-  }
-
-private:
-  std::uint8_t *m_file{nullptr};
-  std::uint32_t m_size{};
-};
-
 template <PadType Type, bool Exists> struct Alternate {};
 
 template <PadType Type> struct Alternate<Type, true> {
   float m_alternateRadiusSquared{};
-  float m_lastRadialSquared{};
-  mp3File m_alternateAudio{};
+  bh::mp3File m_alternateAudio{};
 };
 
 namespace detail {
@@ -59,7 +36,7 @@ Vec3 padAxis(Vec3 position, float tilt) noexcept;
 
 // ----- Pads -----
 
-template <PadType Type, bool hasAlternate = true> class Pad {
+template <PadType Type, bool hasAlternate = false> class Pad {
 public:
   using Alternate = bh::Alternate<Type, hasAlternate>;
 
@@ -71,7 +48,8 @@ public:
   Pad(Pad &&other) noexcept;
   Pad &operator=(Pad &&other) noexcept;
 
-  inline bool inside(const bh::Vec3 &point) noexcept {
+  inline bool inside(const bh::Vec3 &point,
+                     float *savedRadialSquared) const noexcept {
     const bh::Vec3 d = point - m_position;
     const float h = d.dot(m_axis);
 
@@ -81,18 +59,18 @@ public:
 
     const float radialSquared = d.dot(d) - h * h;
     if constexpr (hasAlternate) {
-      m_alternate.m_lastRadialSquared = radialSquared;
+      *savedRadialSquared = radialSquared;
     }
     return radialSquared <= m_radiusSquared;
   }
 
-  void play() noexcept;
+  void play(float radialSquared, float speed) const noexcept;
 
 private:
   bh::Vec3 m_position{};
   bh::Vec3 m_axis{};
   float m_radiusSquared{};
-  mp3File m_normalAudio{};
+  bh::mp3File m_normalAudio{};
   Alternate m_alternate{};
 };
 
@@ -100,8 +78,8 @@ private:
 
 template <PadType Type, bool hasAlternate>
 Pad<Type, hasAlternate>::Pad(Vec3 position, float radius, float tilt,
-                            mp3File &&normalAudio,
-                            Alternate &&alternate) noexcept
+                             mp3File &&normalAudio,
+                             Alternate &&alternate) noexcept
     : m_position{position}, m_axis{detail::padAxis(position, tilt)},
       m_radiusSquared{radius * radius}, m_normalAudio{std::move(normalAudio)},
       m_alternate{std::move(alternate)} {}
@@ -111,7 +89,7 @@ Pad<Type, hasAlternate>::Pad(Pad &&other) noexcept
     : m_position{std::exchange(other.m_position, {})},
       m_axis{std::exchange(other.m_axis, {})},
       m_radiusSquared{std::exchange(other.m_radiusSquared, {})},
-      m_normalAudio{std::exchange(other.m_normalAudio, {})},
+      m_normalAudio{std::exchange(other.m_normalAudio, bh::mp3File{})},
       m_alternate{std::exchange(other.m_alternate, {})} {}
 
 template <PadType Type, bool hasAlternate>
@@ -121,24 +99,23 @@ Pad<Type, hasAlternate>::operator=(Pad &&other) noexcept {
     m_position = std::exchange(other.m_position, {});
     m_axis = std::exchange(other.m_axis, {});
     m_radiusSquared = std::exchange(other.m_radiusSquared, {});
-    m_normalAudio = std::exchange(other.m_normalAudio, {});
+    m_normalAudio = std::exchange(other.m_normalAudio, bh::mp3File{});
     m_alternate = std::exchange(other.m_alternate, {});
   }
   return *this;
 }
 
 template <PadType Type, bool hasAlternate>
-void Pad<Type, hasAlternate>::play() noexcept {
+void Pad<Type, hasAlternate>::play(float radialSquared,
+                                   float speed) const noexcept {
   if constexpr (hasAlternate && Type == PadType::Drum) {
-    if (m_alternate.m_lastRadialSquared >
-        m_alternate.m_alternateRadiusSquared) {
+    if (radialSquared > m_alternate.m_alternateRadiusSquared) {
       // Play Alternate Audio
       return;
     }
 
   } else if constexpr (hasAlternate && Type == PadType::Cymbal) {
-    if (m_alternate.m_lastRadialSquared <=
-        m_alternate.m_alternateRadiusSquared) {
+    if (radialSquared <= m_alternate.m_alternateRadiusSquared) {
       // Play Alternate Audio
       return;
     }
@@ -156,7 +133,7 @@ using StickPlayable =
 
 // ----- Pedal -----
 
-template <> class Pad<PadType::Pedal, true> {
+template <bool hasAlternate> class Pad<PadType::Pedal, hasAlternate> {
 public:
   Pad(const ::gpio_num_t pin) noexcept;
   ~Pad() = default;
@@ -165,23 +142,53 @@ public:
   Pad(Pad &&) = delete;
   Pad &operator=(Pad &&) = delete;
 
-  inline bool pressed() const noexcept { return m_pressed; }
+  inline void play() const noexcept {
+    if (!m_pressed) {
+      return;
+    }
+    m_pressed = false;
+
+    // Play Audio
+  }
+
+  inline bool pressed() const noexcept {
+    if (!m_pressed) {
+      return false;
+    }
+    m_pressed = false;
+    return true;
+  }
 
   inline static void pedalPlayed(void *args) {
     if (args != nullptr) {
       *static_cast<bool *>(args) = true;
     }
   }
-  inline static void pedalLifted(void *args) {
-    if (args != nullptr) {
-      *static_cast<bool *>(args) = false;
-    }
-  }
 
 private:
   ::gpio_num_t m_pin;
-  bool m_pressed{false};
+  mutable bool m_pressed{false};
 };
+
+template <bool hasAlternate>
+Pad<PadType::Pedal, hasAlternate>::Pad(const ::gpio_num_t pin) noexcept {
+  ESP_ERROR_CHECK(::gpio_install_isr_service(ESP_INTR_FLAG_IRAM));
+  {
+    ::gpio_config_t cfg;
+
+    using ISR_CFG = bh::OppositeEdge<true>;
+
+    cfg.pin_bit_mask = 1ULL << pin;
+    cfg.mode = ::GPIO_MODE_INPUT;
+    cfg.pull_up_en = (gpio_pullup_t)ISR_CFG::pull_up;
+    cfg.pull_down_en = (gpio_pulldown_t)ISR_CFG::pull_down;
+    cfg.intr_type = (gpio_int_type_t)ISR_CFG::intr_type;
+
+    ESP_ERROR_CHECK(::gpio_config(&cfg));
+  }
+
+  ESP_ERROR_CHECK(::gpio_isr_handler_add(pin, pedalPlayed, &m_pressed));
+}
 
 // ----- End of Pedal -----
 
