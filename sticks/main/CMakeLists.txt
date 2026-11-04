@@ -1,5 +1,5 @@
 idf_component_register(
-        SRCS "main.cpp" "Drumstick.cpp"
+  SRCS "main.cpp" "Drumstick.cpp"
     INCLUDE_DIRS 
       "../include"
     REQUIRES 

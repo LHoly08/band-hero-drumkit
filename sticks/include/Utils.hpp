@@ -26,22 +26,14 @@ constexpr std::array<std::uint8_t, 6> ReceiverMAC{
     static_cast<std::uint8_t>(receiver_mac_value),
 };
 
-constexpr ::gpio_num_t STATE_BUTTON_PIN = ::GPIO_NUM_20;
+constexpr ::gpio_num_t STATE_BUTTON_PIN = ::GPIO_NUM_0;
+constexpr ::gpio_num_t GREEN_LED_PIN = ::GPIO_NUM_20;
+constexpr ::gpio_num_t RED_LED_PIN = ::GPIO_NUM_19;
+constexpr ::gpio_num_t SENSOR_RESET_PIN = ::GPIO_NUM_21;
 
-constexpr std::uint32_t BUTTON_DEBOUNCE_MS = 200;
-constexpr ::TickType_t BUTTON_DEBOUNCE_TICKS =
-    (BUTTON_DEBOUNCE_MS * configTICK_RATE_HZ + 999) / 1000;
+constexpr std::uint32_t BUTTON_POLL_MS = 10;
+
 static_assert(sizeof(::TickType_t) == sizeof(std::uint32_t));
-
-struct ButtonDebounce {
-  ::TickType_t last_press_tick{0};
-  bool has_press{false};
-
-  bool accept() noexcept;
-};
-
-// Accessed only by the serialized GPIO ISRs; persist across mode changes.
-inline DRAM_ATTR ButtonDebounce reset_button_debounce{};
 
 struct Coordinates {
   float pitch{};

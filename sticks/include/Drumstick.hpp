@@ -7,6 +7,11 @@
 #include "driver/i2c_master.h"
 
 #include "Utils.hpp"
+#include "SerialMAC.hpp"
+#include "freertos/projdefs.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
+#include "portmacro.h"
 
 namespace bh {
 
@@ -16,7 +21,6 @@ public:
   ~Drumstick() noexcept;
   Drumstick(const Drumstick &) = delete;
   Drumstick &operator=(const Drumstick &) = delete;
-  [[noreturn]]
   void loop() noexcept;
 
 private:
@@ -28,18 +32,23 @@ private:
   std::uint32_t m_last_hit_us{};
   float m_top_hit_speed{};
   /*
-   sensor_interrupt_registered - 0
-   has_orientation - 1
-   hit_armed - 2
-   reset_pending - 3
+   has_orientation - 0
+   hit_armed - 1
+   reset_pending - 2
   */
   std::uint8_t m_condition{};
   ::i2c_master_bus_handle_t m_bus{};
   ::i2c_master_dev_handle_t m_device{};
   ::bno085_handle_t m_sensor{};
+  bh::SerialMAC::Address m_receiver_mac{bh::ReceiverMAC};
+  ::QueueHandle_t m_peer_updates{};
+  ::TaskHandle_t m_serial_task{};
+  ::SemaphoreHandle_t m_serial_stopped{};
+
+  static void serial_input_task(void *context) noexcept;
+  void update_peer(const bh::SerialMAC::Address &address) noexcept;
 
   ::esp_err_t start_sensor() noexcept;
-  void recover_sensor() noexcept;
   void update_position(const ::bno085_sensor_value_t &value) noexcept;
   void detect_hit(const ::bno085_sensor_value_t &value) noexcept;
   void detect_hit_angular(const ::bno085_sensor_value_t &value) noexcept;

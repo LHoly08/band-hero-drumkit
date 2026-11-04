@@ -1,20 +1,24 @@
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include "Drumstick.hpp"
 
+#include "ButtonPress.hpp"
 #include "Utils.hpp"
 #include "bno085.h"
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_mac.h"
-#include "esp_netif.h"
 #include "esp_now.h"
+#include "esp_sleep.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
-#include "nvs_flash.h"
+#include "nvs.h"
 
 #include "driver/gpio.h"
 
@@ -37,7 +41,23 @@ constexpr float HIT_RELEASE_THRESHOLD_ANGULAR = 0.5f;
 
 constexpr std::uint32_t MAX_ORIENTATION_AGE_US = 50000;
 constexpr std::uint32_t SENSOR_READY_EVENT = 1u << 0;
-constexpr std::uint32_t RESET_ORIENTATION_EVENT = 1u << 1;
+constexpr std::uint32_t BUTTON_CHANGED_EVENT = 1u << 1;
+constexpr char NVS_NAMESPACE[] = "drumstick";
+constexpr char NVS_PEER_KEY[] = "receiver_mac";
+
+::esp_err_t save_receiver(const bh::SerialMAC::Address &address) noexcept {
+  ::nvs_handle_t handle{};
+  auto result = ::nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+  result = ::nvs_set_blob(handle, NVS_PEER_KEY, address.data(), address.size());
+  if (result == ESP_OK) {
+    result = ::nvs_commit(handle);
+  }
+  ::nvs_close(handle);
+  return result;
+}
 
 void IRAM_ATTR sensor_data_ready(void *context) noexcept {
   ::BaseType_t task_woken = pdFALSE;
@@ -49,8 +69,7 @@ void IRAM_ATTR sensor_data_ready(void *context) noexcept {
 }
 
 enum class Condition : std::uint8_t {
-  sensor_interrupt_registered = 0,
-  has_orientation,
+  has_orientation = 0,
   hit_armed,
   reset_pending,
 };
@@ -75,21 +94,10 @@ inline static constexpr bool get_condition(std::uint8_t conditions) {
 
 } // namespace
 
-bool IRAM_ATTR bh::ButtonDebounce::accept() noexcept {
-  const ::TickType_t now = ::xTaskGetTickCountFromISR();
-  // Unsigned subtraction also handles tick-counter wraparound.
-  if (has_press && ::TickType_t(now - last_press_tick) < bh::BUTTON_DEBOUNCE_TICKS) {
-    return false;
-  }
-  last_press_tick = now;
-  has_press = true;
-  return true;
-}
-
 void IRAM_ATTR bh::Drumstick::reset_button_pressed(void *args) noexcept {
-  if (args != nullptr && bh::reset_button_debounce.accept()) {
+  if (args != nullptr) {
     ::BaseType_t task_woken = pdFALSE;
-    xTaskNotifyFromISR(static_cast<::TaskHandle_t>(args), RESET_ORIENTATION_EVENT,
+    xTaskNotifyFromISR(static_cast<::TaskHandle_t>(args), BUTTON_CHANGED_EVENT,
                        eSetBits, &task_woken);
     if (task_woken) {
       portYIELD_FROM_ISR();
@@ -98,9 +106,91 @@ void IRAM_ATTR bh::Drumstick::reset_button_pressed(void *args) noexcept {
 }
 
 bh::Drumstick::Drumstick() noexcept {
-  ESP_ERROR_CHECK(::nvs_flash_init());
-  ESP_ERROR_CHECK(::esp_netif_init());
+  for (const auto pin : {bh::GREEN_LED_PIN, bh::RED_LED_PIN,
+                         bh::SENSOR_RESET_PIN}) {
+    ESP_ERROR_CHECK(::gpio_hold_dis(pin));
+  }
+  ::gpio_config_t leds{};
+  leds.pin_bit_mask = (1ULL << bh::GREEN_LED_PIN) | (1ULL << bh::RED_LED_PIN);
+  leds.mode = ::GPIO_MODE_OUTPUT;
+  ESP_ERROR_CHECK(::gpio_config(&leds));
+  ESP_ERROR_CHECK(::gpio_set_level(bh::GREEN_LED_PIN, 1));
+  // No battery voltage divider is installed, so low battery cannot be measured.
+  ESP_ERROR_CHECK(::gpio_set_level(bh::RED_LED_PIN, 0));
+
   ESP_ERROR_CHECK(::esp_event_loop_create_default());
+
+  ESP_ERROR_CHECK(::gpio_install_isr_service(ESP_INTR_FLAG_IRAM));
+
+  {
+    ::wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(::esp_wifi_init(&cfg));
+    ESP_ERROR_CHECK(::esp_wifi_set_mode(::WIFI_MODE_STA));
+    ESP_ERROR_CHECK(::esp_wifi_start());
+
+    ESP_ERROR_CHECK(::esp_now_init());
+
+    ::nvs_handle_t handle{};
+    auto result = ::nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (result == ESP_OK) {
+      bh::SerialMAC::Address stored{};
+      std::size_t size = stored.size();
+      result = ::nvs_get_blob(handle, NVS_PEER_KEY, stored.data(), &size);
+      if (result == ESP_OK && size == stored.size()) {
+        m_receiver_mac = stored;
+      } else if (result == ESP_OK) {
+        result = ESP_ERR_NVS_INVALID_LENGTH;
+      }
+      ::nvs_close(handle);
+    }
+    if (result == ESP_ERR_NVS_NOT_FOUND) {
+      const auto saved = save_receiver(m_receiver_mac);
+      if (saved != ESP_OK) {
+        ESP_LOGW("sticks", "Cannot save build-time receiver MAC: %s",
+                 ::esp_err_to_name(saved));
+      } else {
+        ESP_LOGI("sticks", "Build-time receiver MAC saved to NVS: " MACSTR,
+                 MAC2STR(m_receiver_mac.data()));
+      }
+    } else if (result != ESP_OK) {
+      ESP_LOGW("sticks", "Cannot load receiver MAC; using build default: %s",
+               ::esp_err_to_name(result));
+    }
+
+    ::esp_now_peer_info_t peer{};
+    std::copy(m_receiver_mac.begin(), m_receiver_mac.end(), peer.peer_addr);
+    peer.ifidx = ::WIFI_IF_STA;
+    peer.channel = 0; // Use the current Wi-Fi channel.
+    peer.encrypt = false;
+    ESP_ERROR_CHECK(::esp_now_add_peer(&peer));
+    ESP_LOGI("sticks", "ESP-NOW receiver peer registered: " MACSTR,
+             MAC2STR(m_receiver_mac.data()));
+  }
+
+  {
+    ::gpio_config_t cfg;
+
+    cfg.pin_bit_mask = 1ULL << bh::STATE_BUTTON_PIN;
+    cfg.mode = ::GPIO_MODE_INPUT;
+    cfg.pull_up_en = ::GPIO_PULLUP_ENABLE;
+    cfg.pull_down_en = ::GPIO_PULLDOWN_DISABLE;
+    cfg.intr_type = ::GPIO_INTR_ANYEDGE;
+
+    ESP_ERROR_CHECK(::gpio_config(&cfg));
+  }
+
+  // Consume the wake press so it cannot calibrate or send us back to sleep.
+  if (::esp_sleep_get_wakeup_causes() & (1u << ESP_SLEEP_WAKEUP_GPIO)) {
+    do {
+      while (::gpio_get_level(bh::STATE_BUTTON_PIN) == 0) {
+        ::vTaskDelay(pdMS_TO_TICKS(bh::BUTTON_DEBOUNCE_MS));
+      }
+      ::vTaskDelay(pdMS_TO_TICKS(bh::BUTTON_DEBOUNCE_MS));
+    } while (::gpio_get_level(bh::STATE_BUTTON_PIN) == 0);
+  }
+
+  ESP_ERROR_CHECK(::gpio_isr_handler_add(
+      bh::STATE_BUTTON_PIN, reset_button_pressed, xTaskGetCurrentTaskHandle()));
 
   {
     ::i2c_master_bus_config_t bus_config{};
@@ -137,40 +227,95 @@ bh::Drumstick::Drumstick() noexcept {
     ESP_ERROR_CHECK(start_sensor());
   }
 
-  ESP_ERROR_CHECK(::gpio_install_isr_service(ESP_INTR_FLAG_IRAM));
   // Wake the task immediately when the active-low data-ready signal asserts.
   ESP_ERROR_CHECK(::gpio_set_intr_type(::GPIO_NUM_2, ::GPIO_INTR_NEGEDGE));
   ESP_ERROR_CHECK(::gpio_isr_handler_add(::GPIO_NUM_2, sensor_data_ready,
-                                       xTaskGetCurrentTaskHandle()));
+                                         xTaskGetCurrentTaskHandle()));
 
-  set_condition<true, Condition::sensor_interrupt_registered>(m_condition);
+  m_peer_updates = xQueueCreate(4, sizeof(bh::SerialMAC::Address));
+  ESP_ERROR_CHECK(m_peer_updates ? ESP_OK : ESP_ERR_NO_MEM);
+  m_serial_stopped = xSemaphoreCreateBinary();
+  ESP_ERROR_CHECK(m_serial_stopped ? ESP_OK : ESP_ERR_NO_MEM);
+  // Use the configured serial console without blocking the sensor task.
+  const int flags = ::fcntl(STDIN_FILENO, F_GETFL);
+  ESP_ERROR_CHECK(flags >= 0 &&
+                          ::fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK) >= 0
+                      ? ESP_OK
+                      : ESP_FAIL);
+  ESP_ERROR_CHECK(xTaskCreatePinnedToCore(serial_input_task, "serial_mac", 3072,
+                                         this, 1, &m_serial_task, 0) == pdPASS
+                      ? ESP_OK
+                      : ESP_ERR_NO_MEM);
+}
 
-  {
-    ::wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(::esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(::esp_wifi_set_mode(::WIFI_MODE_STA));
-    ESP_ERROR_CHECK(::esp_wifi_start());
+void bh::Drumstick::serial_input_task(void *context) noexcept {
+  auto *stick = static_cast<bh::Drumstick *>(context);
+  bh::SerialMAC parser;
+  ESP_LOGI("sticks", "Enter receiver MAC: 12 hex digits without separators; "
+                     "newline clears incomplete or invalid input");
+  const auto poll_ticks = std::max<::TickType_t>(1, pdMS_TO_TICKS(10));
+  while (ulTaskNotifyTake(pdTRUE, 0) == 0) {
+    char ch{};
+    if (::read(STDIN_FILENO, &ch, 1) == 1) {
+      if (const auto address = parser.push(ch)) {
+        while (xQueueSend(stick->m_peer_updates, &*address, poll_ticks) != pdTRUE) {
+          if (ulTaskNotifyTake(pdTRUE, 0) != 0) {
+            // Finish outside the VFS read before allowing resource teardown.
+            xSemaphoreGive(stick->m_serial_stopped);
+            ::vTaskSuspend(nullptr);
+          }
+        }
+      }
+    } else {
+      if (ulTaskNotifyTake(pdTRUE, poll_ticks) != 0) {
+        break;
+      }
+    }
+  }
+  xSemaphoreGive(stick->m_serial_stopped);
+  ::vTaskSuspend(nullptr);
+}
 
-    ESP_ERROR_CHECK(::esp_now_init());
+void bh::Drumstick::update_peer(
+    const bh::SerialMAC::Address &address) noexcept {
+  const bool changed = address != m_receiver_mac;
+  if (changed) {
+    ::esp_now_peer_info_t peer{};
+    std::copy(address.begin(), address.end(), peer.peer_addr);
+    peer.ifidx = ::WIFI_IF_STA;
+    peer.channel = 0;
+    peer.encrypt = false;
+    const auto result = ::esp_now_add_peer(&peer);
+    if (result != ESP_OK) {
+      ESP_LOGE("sticks", "Cannot register receiver MAC: %s",
+               ::esp_err_to_name(result));
+      return;
+    }
   }
 
-  {
-    ::gpio_config_t cfg;
-
-    cfg.pin_bit_mask = 1ULL << bh::STATE_BUTTON_PIN;
-    cfg.mode = ::GPIO_MODE_INPUT;
-    cfg.pull_up_en = ::GPIO_PULLUP_ENABLE;
-    cfg.pull_down_en = ::GPIO_PULLDOWN_DISABLE;
-    cfg.intr_type = ::GPIO_INTR_POSEDGE;
-
-    ESP_ERROR_CHECK(::gpio_config(&cfg));
+  const auto result = save_receiver(address);
+  if (result != ESP_OK) {
+    if (changed) {
+      (void)::esp_now_del_peer(address.data());
+    }
+    ESP_LOGE("sticks", "Cannot save receiver MAC: %s",
+             ::esp_err_to_name(result));
+    return;
   }
-
-  ESP_ERROR_CHECK(::gpio_isr_handler_add(bh::STATE_BUTTON_PIN, reset_button_pressed,
-                                       xTaskGetCurrentTaskHandle()));
+  if (changed) {
+    const auto removed = ::esp_now_del_peer(m_receiver_mac.data());
+    if (removed != ESP_OK) {
+      ESP_LOGW("sticks", "Cannot remove previous receiver: %s",
+               ::esp_err_to_name(removed));
+    }
+    m_receiver_mac = address;
+  }
+  ESP_LOGI("sticks", "Receiver MAC saved: " MACSTR,
+           MAC2STR(m_receiver_mac.data()));
 }
 
 ::esp_err_t bh::Drumstick::start_sensor() noexcept {
+  ESP_ERROR_CHECK(::gpio_set_level(bh::GREEN_LED_PIN, 1));
   set_condition<false, Condition::has_orientation, Condition::hit_armed>(
       m_condition);
   m_last_hit_us = 0;
@@ -179,7 +324,7 @@ bh::Drumstick::Drumstick() noexcept {
   ESP_LOGI("sticks", "Point level and forward, then press/release reset to "
                      "calibrate chest-relative XYZ (meters)");
   ::esp_err_t result =
-      ::bno085_init(nullptr, m_device, ::GPIO_NUM_2, ::GPIO_NUM_21, &m_sensor);
+      ::bno085_init(nullptr, m_device, ::GPIO_NUM_2, bh::SENSOR_RESET_PIN, &m_sensor);
   if (result != ESP_OK) {
     m_sensor = nullptr;
     return result;
@@ -190,24 +335,9 @@ bh::Drumstick::Drumstick() noexcept {
     result =
         ::bno085_enable_sensor(m_sensor, BNO085_SENSOR_ROTATION_VECTOR, 10000);
   }
-  /*
-   // Currently not needed
-    if (result == ESP_OK) {
-      result = bno085_enable_sensor(m_sensor, BNO085_SENSOR_LINEAR_ACCELERATION,
-                                  10000);
-    }
-  */
   if (result == ESP_OK) {
-    result = ::bno085_enable_sensor(m_sensor, BNO085_SENSOR_GYROSCOPE_CALIBRATED,
-                                  10000);
-  }
-  // Reinitialization configures INT as a plain input, so restore its interrupt.
-  if (result == ESP_OK &&
-      get_condition<Condition::sensor_interrupt_registered>(m_condition)) {
-    result = ::gpio_set_intr_type(::GPIO_NUM_2, ::GPIO_INTR_NEGEDGE);
-    if (result == ESP_OK) {
-      result = ::gpio_intr_enable(::GPIO_NUM_2);
-    }
+    result = ::bno085_enable_sensor(m_sensor,
+                                    BNO085_SENSOR_GYROSCOPE_CALIBRATED, 10000);
   }
   if (result != ESP_OK) {
     ::bno085_deinit(m_sensor);
@@ -216,49 +346,40 @@ bh::Drumstick::Drumstick() noexcept {
   return result;
 }
 
-void bh::Drumstick::recover_sensor() noexcept {
-  ESP_LOGW("sticks",
-           "Sensor unreachable on I2C; resetting BNO085 and I2C. "
-           "SDA=%d SCL=%d INT=%d",
-           ::gpio_get_level(::GPIO_NUM_22), ::gpio_get_level(::GPIO_NUM_23),
-           ::gpio_get_level(::GPIO_NUM_2));
-
-  if (m_sensor) {
-    // The driver holds RST low during deinit, releasing the sensor from the
-    // bus.
-    ::bno085_deinit(m_sensor);
-    m_sensor = nullptr;
-  }
-  ::esp_err_t result = ::i2c_master_bus_reset(m_bus);
-  if (result == ESP_OK) {
-    result = start_sensor();
-  }
-  if (result != ESP_OK) {
-    ESP_LOGE("sticks", "Sensor recovery failed: %s", ::esp_err_to_name(result));
-  } else {
-    ESP_LOGI("sticks",
-             "Sensor restarted; waiting for fresh orientation reports");
-  }
-}
-
 bh::Drumstick::~Drumstick() noexcept {
+  if (m_serial_task) {
+    xTaskNotifyGive(m_serial_task);
+    (void)xSemaphoreTake(m_serial_stopped, portMAX_DELAY);
+    ::vTaskDelete(m_serial_task);
+  }
+  if (m_serial_stopped) {
+    ::vSemaphoreDelete(m_serial_stopped);
+  }
+  if (m_peer_updates) {
+    ::vQueueDelete(m_peer_updates);
+  }
+  (void)::gpio_set_level(bh::GREEN_LED_PIN, 0);
   ::gpio_isr_handler_remove(::GPIO_NUM_2);
   ::bno085_deinit(m_sensor);
+  (void)::i2c_master_bus_rm_device(m_device);
+  (void)::i2c_del_master_bus(m_bus);
 
   (void)::esp_now_unregister_recv_cb();
   (void)::esp_now_deinit();
 
   (void)::esp_wifi_stop();
   (void)::esp_wifi_deinit();
+  (void)::esp_event_loop_delete_default();
 
   ::gpio_isr_handler_remove(bh::STATE_BUTTON_PIN);
   ::gpio_uninstall_isr_service();
 }
 
 void bh::Drumstick::on_sensor_data(::bno085_handle_t,
-                               const ::bno085_sensor_value_t *value,
-                               void *context) noexcept {
+                                   const ::bno085_sensor_value_t *value,
+                                   void *context) noexcept {
   auto *stick = static_cast<bh::Drumstick *>(context);
+
   switch (value->sensor_id) {
   case BNO085_SENSOR_GYROSCOPE_CALIBRATED: {
     stick->detect_hit(*value);
@@ -277,10 +398,12 @@ void bh::Drumstick::on_sensor_data(::bno085_handle_t,
   }
 }
 
-void bh::Drumstick::update_position(const ::bno085_sensor_value_t &value) noexcept {
+void bh::Drumstick::update_position(
+    const ::bno085_sensor_value_t &value) noexcept {
 
   const auto &q = value.data.quaternion;
   const bool reset = get_condition<Condition::reset_pending>(m_condition);
+
   if (!m_tracking.update({q.real, q.i, q.j, q.k}, reset)) {
     set_condition<false, Condition::has_orientation, Condition::hit_armed>(
         m_condition);
@@ -290,13 +413,14 @@ void bh::Drumstick::update_position(const ::bno085_sensor_value_t &value) noexce
 
   bh::Coordinates moved;
   ::bno085_quaternion_to_euler(q.i, q.j, q.k, q.real, &moved.roll, &moved.pitch,
-                             &moved.yaw);
+                               &moved.yaw);
 
   // Keep the request pending until an orientation report actually arrives.
   if (reset) {
     m_offset = moved;
     m_top_hit_speed = 0.0f;
     set_condition<false, Condition::reset_pending>(m_condition);
+    ESP_ERROR_CHECK(::gpio_set_level(bh::GREEN_LED_PIN, 0));
     const auto p = m_tracking.position();
     ESP_LOGI("sticks",
              "XYZ calibrated: X=%.3f Y=%.3f Z=%.3f m "
@@ -316,6 +440,7 @@ void bh::Drumstick::update_position(const ::bno085_sensor_value_t &value) noexce
 
 void bh::Drumstick::detect_hit(const ::bno085_sensor_value_t &value) noexcept {
   const auto now_us = static_cast<std::uint32_t>(::esp_timer_get_time());
+
   if (get_condition<Condition::reset_pending>(m_condition) ||
       !get_condition<Condition::has_orientation>(m_condition) ||
       std::uint32_t(now_us - m_orientation_us) > MAX_ORIENTATION_AGE_US)
@@ -367,88 +492,63 @@ void bh::Drumstick::detect_hit(const ::bno085_sensor_value_t &value) noexcept {
     float speed{};
   } packet{.coords = packet_coords, .speed = m_top_hit_speed};
 
-  // std::printf("X: %.3f Y: %.3f Z: %.3f \n", g.x, g.y, g.z);
-  std::printf("Hit! Roll: %.3f  Pitch: %.3f  Yaw: %.3f (rad), Speed: %.3f\n",
-              packet.coords.roll, packet.coords.pitch, packet.coords.yaw,
-              packet.speed);
-  // Separate line preserves the existing angle-based serial matcher format.
-  portENTER_CRITICAL(&bh::position_mux);
-  const bh::Vector3 position = m_position;
-  portEXIT_CRITICAL(&bh::position_mux);
-  std::printf("HitXYZ! X: %.3f  Y: %.3f  Z: %.3f (m)\n", position.x, position.y,
-              position.z);
-
-  // Register ReceiverMAC as an ESP-NOW peer before enabling transmission.
-  // const esp_err_t status = esp_now_send(
-  //     ReceiverMAC.data(), reinterpret_cast<const std::uint8_t *>(&packet),
-  //     sizeof(packet));
-  // if (status != ESP_OK) {
-  //   ESP_LOGW("sticks", "Hit send failed: %s", esp_err_to_name(status));
-  // }
+  const esp_err_t status = esp_now_send(
+      m_receiver_mac.data(), reinterpret_cast<const std::uint8_t *>(&packet),
+      sizeof(packet));
+  if (status != ESP_OK) {
+    ESP_LOGW("sticks", "Hit send failed: %s", esp_err_to_name(status));
+  }
 
   m_top_hit_speed = std::abs(speed);
 }
 
 void bh::Drumstick::loop() noexcept {
-  // TickType_t is 32 bits on this target. Unsigned subtraction handles
-  // rollover.
-  constexpr ::TickType_t connection_check_ticks = pdMS_TO_TICKS(1000);
-  ::TickType_t last_connection_check_tick = xTaskGetTickCount();
-  std::uint32_t consecutive_probe_failures{};
-  std::uint32_t events{};
+  using Action = bh::ButtonPress::Action;
 
-infinite_loop:
+  bh::ButtonPress button;
+  // Resample to confirm a stable press, even without sensor data.
+  constexpr ::TickType_t button_poll_ticks =
+      pdMS_TO_TICKS(bh::BUTTON_POLL_MS) > 0 ? pdMS_TO_TICKS(bh::BUTTON_POLL_MS)
+                                            : 1;
 
-  // Merge events received while sleeping with any that arrived since waking.
-  std::uint32_t pending_events{};
-  (void)xTaskNotifyWait(0, UINT32_MAX, &pending_events, 0);
-  events |= pending_events;
-  if (events & RESET_ORIENTATION_EVENT) {
-    m_tracking.invalidate();
-    m_top_hit_speed = 0.0f;
-    set_condition<true, Condition::reset_pending>(m_condition);
-    set_condition<false, Condition::has_orientation, Condition::hit_armed>(
-        m_condition);
-  }
-  events = 0;
+  while (true) {
 
-  if (m_sensor) {
-    ::bno085_service(m_sensor);
-  }
-  // Check reachability without treating a quiet sensor as a disconnect.
-  const ::TickType_t now_tick = xTaskGetTickCount();
-  const ::TickType_t ticks_since_check = now_tick - last_connection_check_tick;
-  if (ticks_since_check >= connection_check_ticks) {
-    last_connection_check_tick = now_tick;
-    const ::esp_err_t connection = ::i2c_master_probe(m_bus, 0x4A, 100);
-    if (connection == ESP_OK) {
-      consecutive_probe_failures = 0;
-      // A reconnected device can ACK while its driver session is still closed.
-      if (!m_sensor) {
-        recover_sensor();
-      }
-    } else if (connection == ESP_ERR_NOT_FOUND ||
-               connection == ESP_ERR_TIMEOUT ||
-               connection == ESP_ERR_INVALID_STATE) {
-      ++consecutive_probe_failures;
-      if (consecutive_probe_failures >= 3) {
-        consecutive_probe_failures = 0;
-        recover_sensor();
-      }
+    bh::SerialMAC::Address address{};
+    if (xQueueReceive(m_peer_updates, &address, 0) == pdTRUE) {
+      update_peer(address);
     }
-    last_connection_check_tick = xTaskGetTickCount();
-  }
-  // Sleep only while no packet is ready. An INT edge wakes us immediately;
-  // the timeout permits a connection check even after a physical disconnect.
-  if (!m_sensor || ::gpio_get_level(::GPIO_NUM_2) != 0) {
-    const ::TickType_t elapsed_ticks =
-        xTaskGetTickCount() - last_connection_check_tick;
-    if (elapsed_ticks < connection_check_ticks) {
-      (void)xTaskNotifyWait(0, UINT32_MAX, &events,
-                            connection_check_ticks - elapsed_ticks);
+
+    // GPIO notifications wake the task on either edge.
+    (void)xTaskNotifyWait(0, UINT32_MAX, nullptr, 0);
+    switch (button.update(
+        ::gpio_get_level(bh::STATE_BUTTON_PIN) == 0,
+        static_cast<std::uint32_t>(::esp_timer_get_time() / 1000))) {
+    case Action::Calibrate: {
+      ESP_ERROR_CHECK(::gpio_set_level(bh::GREEN_LED_PIN, 1));
+      m_tracking.invalidate();
+      m_top_hit_speed = 0.0f;
+      set_condition<true, Condition::reset_pending>(m_condition);
+      set_condition<false, Condition::has_orientation, Condition::hit_armed>(
+          m_condition);
+      break;
+    }
+    case Action::Sleep: {
+      return; // app_main destroys this object before entering deep sleep.
+    }
+    case Action::None: {
+      break;
+    }
+    }
+
+    if (m_sensor) {
+      ::bno085_service(m_sensor);
+    }
+    // Sleep only while no packet is ready. An INT edge wakes us immediately;
+    // the timeout keeps button sampling active even after a sensor disconnect.
+    if (!m_sensor || ::gpio_get_level(::GPIO_NUM_2) != 0) {
+      (void)xTaskNotifyWait(0, UINT32_MAX, nullptr, button_poll_ticks);
     }
   }
-  goto infinite_loop;
 }
 
 } // namespace bh

@@ -51,6 +51,19 @@ idf.py -DMAC=aabbccddeeff -DRADIUS=0.275 build
 
 `MAC` is the receiver's Wi-Fi station MAC written as 12 hex digits without colons.
 It defaults to `000000000000`, a placeholder; it does not change this board's MAC.
+At runtime, send the receiver's 12 hexadecimal digits (for example,
+`aabbccddeeff`) over the USB serial console. A task pinned to core 0 accepts
+uppercase or lowercase and submits the MAC as soon as the twelfth digit arrives;
+Enter is optional. Newlines clear incomplete input. An invalid character rejects
+input until the next newline, so omit colons and spaces.
+The drumstick loop registers the new ESP-NOW peer, saves its six-byte address as
+the `receiver_mac` blob in the `drumstick` NVS namespace, and switches hit sends
+to that address. It logs success or failure. If registration or persistence fails,
+the current receiver stays active. The constructor loads the saved address on
+every boot (including deep-sleep wake); the build-time `MAC` is the fallback
+when no valid blob exists. When the namespace or key is missing, the constructor
+saves the build-time MAC to NVS as the initial address. Subsequent boots preserve
+the stored address, including one configured over serial.
 `RADIUS` is the sphere radius in meters and defaults to `0.275` (27.5 cm).
 Pass a number without a unit suffix, for example `-DRADIUS=0.27` for 27 cm.
 CMake remembers both values between builds. GPIOs, the sensor address, and Wi-Fi
@@ -70,8 +83,25 @@ The driver requests rotation-vector and calibrated-gyroscope reports at 100 Hz.
 The existing gyro detector arms on a downstroke and fires as it slows or reverses.
 Its thresholds and roll-dependent axis selection remain in `main/Drumstick.cpp`.
 `HIT_SPEED_SCALE` preserves its existing tuning and is independent of the sphere
-radius. The reset button uses a 200 ms debounce window, controlled by
-`BUTTON_DEBOUNCE_MS` in `include/Utils.hpp`.
+radius. The active-low state/calibration button uses both GPIO edges and a 10 ms
+stable-level debounce window on press only. Release is accepted immediately;
+a press shorter than two seconds requests calibration. Releasing after a press
+of at least two seconds returns from the drumstick loop. `app_main` destroys the
+drumstick to shut down the sensor, I2C, and Wi-Fi, then enters deep sleep with
+GPIO 0 low as the only enabled wake source. Both LEDs are held off and the BNO085
+reset pin is held low during deep sleep. A new button press reboots the ESP into
+`app_main`; the wake press is consumed before normal button handling starts.
+Power-on and button wake both start the drumstick directly, without state classes.
+Timing constants and the button pin are in `include/ButtonPress.hpp` and
+`include/Utils.hpp`, respectively (currently GPIO 0).
+
+External LEDs are active-high: `GREEN_LED_PIN` (GPIO 20) stays on until a valid
+calibration completes, and turns on again when recalibrating.
+`RED_LED_PIN` (GPIO 19) is reserved for low battery and currently stays off:
+the XIAO ESP32-C6 needs an external battery voltage divider, and none is installed.
+See [Seeed's battery measurement instructions](https://wiki.seeedstudio.com/xiao_esp32c6_getting_started/#reading-battery-voltage).
+The state button already uses A0/GPIO 0, so a future battery divider must use a
+different free ADC pin. `SENSOR_RESET_PIN` is GPIO 21.
 
 ## Shared chest-origin position experiment
 
@@ -91,8 +121,8 @@ To try it:
 
 1. Build and flash the stick, then open its serial monitor.
 2. Hold the stick level, pointing toward your intended forward direction.
-   Press and release the existing reset button. With the current pull-up and
-   rising-edge wiring, reset occurs on release for a button connected to ground.
+   Press and release the existing state/calibration button in under two seconds.
+   Calibration occurs on release for a button connected to ground.
    Hold the pose until `XYZ calibrated` appears.
 3. Calibrate the second stick pointing in the same direction. Reset sets heading;
    gravity still defines up. It does not measure the chest location or set the
@@ -110,8 +140,9 @@ To try it:
 5. Record 20-30 hits per intended drum and compare their XYZ spread before
    choosing drum centers and tolerances for the base. Test both hands.
 
-Hits are suppressed until calibration, and again after sensor recovery until
-you recalibrate. Near-vertical reset poses cannot define a heading; keep reset
+Hits are suppressed until calibration. The main loop does not probe or
+automatically recover a disconnected sensor; reboot after reconnecting it.
+Near-vertical reset poses cannot define a heading; keep reset
 pending by pointing level until calibration succeeds. Invalid orientation
 reports or reports older than 50 ms disarm the detector. Hit positions use the
 latest valid orientation serviced by the firmware, not interpolated strike-time
