@@ -20,7 +20,7 @@ struct Quaternion {
 
 struct SphereConfig {
   // Model parameters, in meters. Both sticks use the same chest origin.
-  static constexpr float radius{static_cast<float>(BH_RADIUS)};
+  float radius{static_cast<float>(BH_RADIUS)};
   Vector3 center{};
   // Sensor-local axis pointing toward the tip. Change for your actual mounting.
   Vector3 tip_axis{1.0f, 0.0f, 0.0f};
@@ -36,6 +36,15 @@ public:
   void invalidate() noexcept { m_calibrated = false; }
   bool calibrated() const noexcept { return m_calibrated; }
   Vector3 position() const noexcept { return m_position; }
+
+  // Takes effect on the next update(); calibration policy belongs to the caller.
+  bool set_radius(float meters) noexcept {
+    if (!std::isfinite(meters) || meters <= 0.0f) {
+      return false;
+    }
+    m_config.radius = meters;
+    return true;
+  }
 
   // q maps the sensor frame into the BNO085 world frame (Z up).
   // On recenter, point the tip level and forward. Vertical poses cannot define

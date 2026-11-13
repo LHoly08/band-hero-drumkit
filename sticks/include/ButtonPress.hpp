@@ -17,9 +17,9 @@ public:
       m_raw_pressed = pressed;
       m_raw_since = now;
     }
-    // Debounce only the press; accept release immediately.
+    // Require both edges to remain stable; release bounce must not end a hold.
     if (pressed == m_pressed ||
-        (pressed && std::uint32_t(now - m_raw_since) < BUTTON_DEBOUNCE_MS)) {
+        std::uint32_t(now - m_raw_since) < BUTTON_DEBOUNCE_MS) {
       return Action::None;
     }
     m_pressed = pressed;

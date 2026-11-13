@@ -8,6 +8,8 @@
 #include <string_view>
 #include <utility>
 
+#include "HitPacket.hpp"
+
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -29,28 +31,7 @@ using AtomicState = std::atomic<State>;
 using MAC = std::array<std::uint8_t, 6>;
 
 constexpr std::string_view configFile = "config.lua";
-
-struct Vec3 {
-  float x{};
-  float y{};
-  float z{};
-
-  Vec3 operator-(const Vec3 &other) const noexcept {
-    return Vec3{
-        .x = x - other.x,
-        .y = y - other.y,
-        .z = z - other.z,
-    };
-  }
-  float dot(const Vec3 &other) const noexcept {
-    return x * other.x + y * other.y + z * other.z;
-  }
-};
-
-struct Packet {
-  Vec3 coords{};
-  float speed{};
-};
+inline constexpr std::uint32_t audioSampleRate = 24000;
 
 class File {
 public:
@@ -94,15 +75,12 @@ public:
   mp3File(mp3File &&other) noexcept
       : m_file{std::exchange(other.m_file, nullptr)},
         m_size{std::exchange(other.m_size, 0)} {}
-  mp3File &operator=(mp3File &&other) noexcept {
-    if (this != &other) {
-      m_file = std::exchange(other.m_file, nullptr);
-      m_size = std::exchange(other.m_size, 0);
-    }
-    return *this;
-  }
+  mp3File &operator=(mp3File &&other) noexcept;
 
+  // Mono signed 16-bit PCM at audioSampleRate, exposed as raw 16-bit words.
+  // A failed load leaves a null pointer and zero size.
   inline std::uint16_t *getFile() const noexcept { return m_file; }
+  // Size of the decoded PCM in bytes (not the compressed file size).
   inline std::uint32_t getSize() const noexcept { return m_size; }
 
 private:

@@ -1,15 +1,20 @@
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <fcntl.h>
-#include <unistd.h>
 
 #include "Drumstick.hpp"
 
 #include "ButtonPress.hpp"
+#include "HitPacket.hpp"
+#include "SerialCommand.hpp"
 #include "Utils.hpp"
 #include "bno085.h"
+#include "esp_attr.h"
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -33,6 +38,9 @@ namespace bh {
 
 namespace {
 
+// Keep pending radius updates free of hidden locks on the target.
+static_assert(std::atomic<float>::is_always_lock_free);
+
 // Preserve the existing detector's tuning independently of the position model.
 // This is a legacy gyro scale, not the sphere radius in SphereConfig.
 constexpr float HIT_SPEED_SCALE = 3.0f;
@@ -44,6 +52,37 @@ constexpr std::uint32_t SENSOR_READY_EVENT = 1u << 0;
 constexpr std::uint32_t BUTTON_CHANGED_EVENT = 1u << 1;
 constexpr char NVS_NAMESPACE[] = "drumstick";
 constexpr char NVS_PEER_KEY[] = "receiver_mac";
+
+#if BH_DEBUG
+// Static lifetime: the Wi-Fi callback never accesses a Drumstick being destroyed.
+static_assert(std::atomic<std::uint32_t>::is_always_lock_free);
+std::atomic<std::uint32_t> send_successes{};
+std::atomic<std::uint32_t> send_failures{};
+std::int64_t last_send_report_us{};
+constexpr std::int64_t SEND_REPORT_INTERVAL_US = 5'000'000;
+
+void on_send_result(const ::esp_now_send_info_t *,
+                    ::esp_now_send_status_t status) noexcept {
+  // Runs on the high-priority Wi-Fi task: no logging, waiting, or retrying here.
+  auto &counter = status == ESP_NOW_SEND_SUCCESS ? send_successes : send_failures;
+  counter.fetch_add(1, std::memory_order_relaxed);
+}
+
+void report_send_results() noexcept {
+  const auto now_us = ::esp_timer_get_time();
+  if (now_us - last_send_report_us < SEND_REPORT_INTERVAL_US) {
+    return;
+  }
+  last_send_report_us = now_us;
+  const auto successes = send_successes.exchange(0, std::memory_order_relaxed);
+  const auto failures = send_failures.exchange(0, std::memory_order_relaxed);
+  if (successes != 0 || failures != 0) {
+    ESP_LOGI("sticks", "ESP-NOW send results: %lu MAC-acked, %lu failed",
+             static_cast<unsigned long>(successes),
+             static_cast<unsigned long>(failures));
+  }
+}
+#endif
 
 ::esp_err_t save_receiver(const bh::SerialMAC::Address &address) noexcept {
   ::nvs_handle_t handle{};
@@ -83,7 +122,7 @@ inline static constexpr void set_condition(std::uint8_t &conditions) {
   if constexpr (flag) {
     conditions |= bitMask;
   } else {
-    conditions &= ~bitMask;
+    conditions &= static_cast<std::uint8_t>(~bitMask);
   }
 }
 
@@ -106,8 +145,8 @@ void IRAM_ATTR bh::Drumstick::reset_button_pressed(void *args) noexcept {
 }
 
 bh::Drumstick::Drumstick() noexcept {
-  for (const auto pin : {bh::GREEN_LED_PIN, bh::RED_LED_PIN,
-                         bh::SENSOR_RESET_PIN}) {
+  for (const auto pin :
+       {bh::GREEN_LED_PIN, bh::RED_LED_PIN, bh::SENSOR_RESET_PIN}) {
     ESP_ERROR_CHECK(::gpio_hold_dis(pin));
   }
   ::gpio_config_t leds{};
@@ -129,6 +168,13 @@ bh::Drumstick::Drumstick() noexcept {
     ESP_ERROR_CHECK(::esp_wifi_start());
 
     ESP_ERROR_CHECK(::esp_now_init());
+#if BH_DEBUG
+    send_successes.store(0, std::memory_order_relaxed);
+    send_failures.store(0, std::memory_order_relaxed);
+    last_send_report_us = ::esp_timer_get_time();
+    ESP_ERROR_CHECK(::esp_now_register_send_cb(on_send_result));
+    ESP_LOGI("sticks", "ESP-NOW debug diagnostics enabled (5 s summaries)");
+#endif
 
     ::nvs_handle_t handle{};
     auto result = ::nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
@@ -232,46 +278,57 @@ bh::Drumstick::Drumstick() noexcept {
   ESP_ERROR_CHECK(::gpio_isr_handler_add(::GPIO_NUM_2, sensor_data_ready,
                                          xTaskGetCurrentTaskHandle()));
 
-  m_peer_updates = xQueueCreate(4, sizeof(bh::SerialMAC::Address));
+  // Only the latest unread MAC matters; xQueueOverwrite requires one slot.
+  m_peer_updates = xQueueCreate(1, sizeof(bh::SerialMAC::Address));
   ESP_ERROR_CHECK(m_peer_updates ? ESP_OK : ESP_ERR_NO_MEM);
   m_serial_stopped = xSemaphoreCreateBinary();
   ESP_ERROR_CHECK(m_serial_stopped ? ESP_OK : ESP_ERR_NO_MEM);
   // Use the configured serial console without blocking the sensor task.
   const int flags = ::fcntl(STDIN_FILENO, F_GETFL);
-  ESP_ERROR_CHECK(flags >= 0 &&
-                          ::fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK) >= 0
-                      ? ESP_OK
-                      : ESP_FAIL);
+  ESP_ERROR_CHECK(
+      flags >= 0 && ::fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK) >= 0
+          ? ESP_OK
+          : ESP_FAIL);
   ESP_ERROR_CHECK(xTaskCreatePinnedToCore(serial_input_task, "serial_mac", 3072,
-                                         this, 1, &m_serial_task, 0) == pdPASS
+                                          this, 1, &m_serial_task, 0) == pdPASS
                       ? ESP_OK
                       : ESP_ERR_NO_MEM);
 }
 
 void bh::Drumstick::serial_input_task(void *context) noexcept {
   auto *stick = static_cast<bh::Drumstick *>(context);
-  bh::SerialMAC parser;
-  ESP_LOGI("sticks", "Enter receiver MAC: 12 hex digits without separators; "
-                     "newline clears incomplete or invalid input");
+  bh::SerialCommandReader reader;
   const auto poll_ticks = std::max<::TickType_t>(1, pdMS_TO_TICKS(10));
+  ESP_LOGI("sticks", "Commands: M AAAAAAAAAAAA or R 27.5 (cm), then Enter");
   while (ulTaskNotifyTake(pdTRUE, 0) == 0) {
     char ch{};
-    if (::read(STDIN_FILENO, &ch, 1) == 1) {
-      if (const auto address = parser.push(ch)) {
-        while (xQueueSend(stick->m_peer_updates, &*address, poll_ticks) != pdTRUE) {
-          if (ulTaskNotifyTake(pdTRUE, 0) != 0) {
-            // Finish outside the VFS read before allowing resource teardown.
-            xSemaphoreGive(stick->m_serial_stopped);
-            ::vTaskSuspend(nullptr);
-          }
-        }
-      }
-    } else {
+    if (::read(STDIN_FILENO, &ch, 1) != 1) {
       if (ulTaskNotifyTake(pdTRUE, poll_ticks) != 0) {
         break;
       }
+      continue;
+    }
+    const auto command = reader.push(ch);
+    switch (command.kind) {
+    case bh::SerialCommand::Kind::Receiver:
+      // Peer registration and NVS writes belong to the main task.
+      xQueueOverwrite(stick->m_peer_updates, &command.address);
+      break;
+    case bh::SerialCommand::Kind::Radius:
+      stick->m_pending_radius.store(command.radius_meters,
+                                    std::memory_order_relaxed);
+      break;
+    case bh::SerialCommand::Kind::Invalid:
+      ESP_LOGW("sticks", "Invalid command; use M AAAAAAAAAAAA or R 27.5 "
+                         "with one space, then Enter");
+      break;
+    case bh::SerialCommand::Kind::None:
+      break;
     }
   }
+
+  // Acknowledge that serial reads have stopped before the destructor deletes
+  // us.
   xSemaphoreGive(stick->m_serial_stopped);
   ::vTaskSuspend(nullptr);
 }
@@ -318,13 +375,12 @@ void bh::Drumstick::update_peer(
   ESP_ERROR_CHECK(::gpio_set_level(bh::GREEN_LED_PIN, 1));
   set_condition<false, Condition::has_orientation, Condition::hit_armed>(
       m_condition);
-  m_last_hit_us = 0;
   m_top_hit_speed = 0.0f;
   m_tracking.invalidate();
   ESP_LOGI("sticks", "Point level and forward, then press/release reset to "
                      "calibrate chest-relative XYZ (meters)");
-  ::esp_err_t result =
-      ::bno085_init(nullptr, m_device, ::GPIO_NUM_2, bh::SENSOR_RESET_PIN, &m_sensor);
+  ::esp_err_t result = ::bno085_init(nullptr, m_device, ::GPIO_NUM_2,
+                                     bh::SENSOR_RESET_PIN, &m_sensor);
   if (result != ESP_OK) {
     m_sensor = nullptr;
     return result;
@@ -364,7 +420,9 @@ bh::Drumstick::~Drumstick() noexcept {
   (void)::i2c_master_bus_rm_device(m_device);
   (void)::i2c_del_master_bus(m_bus);
 
-  (void)::esp_now_unregister_recv_cb();
+#if BH_DEBUG
+  (void)::esp_now_unregister_send_cb();
+#endif
   (void)::esp_now_deinit();
 
   (void)::esp_wifi_stop();
@@ -383,9 +441,6 @@ void bh::Drumstick::on_sensor_data(::bno085_handle_t,
   switch (value->sensor_id) {
   case BNO085_SENSOR_GYROSCOPE_CALIBRATED: {
     stick->detect_hit(*value);
-    return;
-  }
-  case BNO085_SENSOR_LINEAR_ACCELERATION: {
     return;
   }
   case BNO085_SENSOR_ROTATION_VECTOR: {
@@ -428,12 +483,8 @@ void bh::Drumstick::update_position(
              p.x, p.y, p.z);
   }
 
-  portENTER_CRITICAL(&bh::rotation_mux);
+  // Sensor callbacks run synchronously on the loop task via bno085_service().
   m_rotation = moved;
-  portEXIT_CRITICAL(&bh::rotation_mux);
-  portENTER_CRITICAL(&bh::position_mux);
-  m_position = m_tracking.position();
-  portEXIT_CRITICAL(&bh::position_mux);
   m_orientation_us = static_cast<std::uint32_t>(::esp_timer_get_time());
   set_condition<true, Condition::has_orientation>(m_condition);
 }
@@ -452,11 +503,9 @@ void bh::Drumstick::detect_hit(const ::bno085_sensor_value_t &value) noexcept {
   const auto &g = value.data.gyroscope_calibrated;
   float speed = HIT_SPEED_SCALE;
 
-  portENTER_CRITICAL(&bh::rotation_mux);
-  const bh::Coordinates packet_coords = m_rotation - m_offset;
-  portEXIT_CRITICAL(&bh::rotation_mux);
+  const bh::Coordinates relative_rotation = m_rotation - m_offset;
 
-  switch (bh::closest_direction(packet_coords.roll)) {
+  switch (bh::closest_direction(relative_rotation.roll)) {
   case bh::Direction::PositiveReal: {
     speed *= g.y;
     break;
@@ -487,10 +536,16 @@ void bh::Drumstick::detect_hit(const ::bno085_sensor_value_t &value) noexcept {
   }
   set_condition<false, Condition::hit_armed>(m_condition);
 
-  struct {
-    bh::Coordinates coords{};
-    float speed{};
-  } packet{.coords = packet_coords, .speed = m_top_hit_speed};
+  const auto position = m_tracking.position();
+  const bh::Packet packet{
+      .coords = {position.x, position.y, position.z}, .speed = m_top_hit_speed};
+
+  // One write keeps the two records adjacent for SticksTestAudio's HitReader.
+  std::printf("Hit! Roll: %.3f  Pitch: %.3f  Yaw: %.3f (rad), Speed: %.3f\n"
+              "HitXYZ! X: %.3f  Y: %.3f  Z: %.3f (m)\n",
+              relative_rotation.roll, relative_rotation.pitch,
+              relative_rotation.yaw, packet.speed, packet.coords.x,
+              packet.coords.y, packet.coords.z);
 
   const esp_err_t status = esp_now_send(
       m_receiver_mac.data(), reinterpret_cast<const std::uint8_t *>(&packet),
@@ -499,7 +554,16 @@ void bh::Drumstick::detect_hit(const ::bno085_sensor_value_t &value) noexcept {
     ESP_LOGW("sticks", "Hit send failed: %s", esp_err_to_name(status));
   }
 
-  m_top_hit_speed = std::abs(speed);
+  m_top_hit_speed = 0.0f;
+}
+
+void bh::Drumstick::request_calibration() noexcept {
+  ESP_ERROR_CHECK(::gpio_set_level(bh::GREEN_LED_PIN, 1));
+  m_tracking.invalidate();
+  m_top_hit_speed = 0.0f;
+  set_condition<true, Condition::reset_pending>(m_condition);
+  set_condition<false, Condition::has_orientation, Condition::hit_armed>(
+      m_condition);
 }
 
 void bh::Drumstick::loop() noexcept {
@@ -518,18 +582,25 @@ void bh::Drumstick::loop() noexcept {
       update_peer(address);
     }
 
+    // Consume the latest radius and clear it in one atomic operation.
+    // The value is self-contained, so relaxed ordering is sufficient.
+    const float radius_meters =
+        m_pending_radius.exchange(0.0f, std::memory_order_relaxed);
+
+    if (radius_meters > 0.0f && m_tracking.set_radius(radius_meters)) {
+      // Recalibrate with the new radius and suppress hits until it succeeds.
+      request_calibration();
+      ESP_LOGI("sticks", "Radius updated: %.3f m (%.2f cm)", radius_meters,
+               radius_meters * 100.0f);
+    }
+
     // GPIO notifications wake the task on either edge.
     (void)xTaskNotifyWait(0, UINT32_MAX, nullptr, 0);
     switch (button.update(
         ::gpio_get_level(bh::STATE_BUTTON_PIN) == 0,
         static_cast<std::uint32_t>(::esp_timer_get_time() / 1000))) {
     case Action::Calibrate: {
-      ESP_ERROR_CHECK(::gpio_set_level(bh::GREEN_LED_PIN, 1));
-      m_tracking.invalidate();
-      m_top_hit_speed = 0.0f;
-      set_condition<true, Condition::reset_pending>(m_condition);
-      set_condition<false, Condition::has_orientation, Condition::hit_armed>(
-          m_condition);
+      request_calibration();
       break;
     }
     case Action::Sleep: {
@@ -543,6 +614,9 @@ void bh::Drumstick::loop() noexcept {
     if (m_sensor) {
       ::bno085_service(m_sensor);
     }
+#if BH_DEBUG
+    report_send_results();
+#endif
     // Sleep only while no packet is ready. An INT edge wakes us immediately;
     // the timeout keeps button sampling active even after a sensor disconnect.
     if (!m_sensor || ::gpio_get_level(::GPIO_NUM_2) != 0) {

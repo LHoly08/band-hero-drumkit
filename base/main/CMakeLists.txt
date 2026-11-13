@@ -3,10 +3,12 @@ idf_component_register(
       "main.cpp"
       "Pads.cpp"
       "Utils.cpp"
-    INCLUDE_DIRS "../include"
+      "Audio.cpp"
+    INCLUDE_DIRS "../include" "../../shared"
     REQUIRES nvs_flash esp_wifi esp_event esp_netif esp_timer
-             esp_driver_i2c esp_driver_gpio u8g2 freertos
+             esp_driver_i2c esp_driver_gpio esp_driver_i2s u8g2 freertos
              fatfs sdmmc esp_driver_sdmmc esp_psram
+    PRIV_REQUIRES esp_audio_codec esp_audio_effects
 )
 
 set(MAC "000000000000" CACHE STRING "Hub MAC, 12 hex digits")
@@ -18,3 +20,7 @@ endif()
 target_compile_definitions(${COMPONENT_LIB} PRIVATE BH_MAC=0x${MAC}ULL)
 
 target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_26)
+
+target_compile_options(${COMPONENT_LIB} PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:-freflection>
+)

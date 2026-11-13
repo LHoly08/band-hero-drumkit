@@ -2,7 +2,7 @@
 
 ESP-IDF firmware for a Seeed Studio XIAO ESP32-C6, using the
 `rinku404/bno085` component (pinned to 1.2.0) and ESP-NOW.
-Requires CMake 3.31 or newer, ESP-IDF 5.5 or newer, and a compiler
+Requires CMake 3.31 or newer, ESP-IDF 6.0 or newer, and a compiler
 supporting C++26.
 The project adds the upstream component's missing I2C/GPIO driver dependencies
 for ESP-IDF 6 without editing downloaded component files.
@@ -42,6 +42,38 @@ console. Normal builds use the standard `build` directory; no target argument
 or separate build directory is needed.
 ESP-IDF downloads the managed BNO085 component during configuration;
 commit `main/idf_component.yml` and `dependencies.lock` to preserve its version.
+The BNO085 driver is configured for one sensor instance to match this board.
+
+### Debug delivery diagnostics
+
+No ESP-IDF SDK files need editing. Enable this project's diagnostics with:
+
+```sh
+idf.py -DDEBUG=ON build
+idf.py -p /dev/ttyACM0 flash monitor
+```
+
+The ESP-NOW send callback only increments lock-free counters. The main loop
+prints `ESP-NOW send results: ... MAC-acked, ... failed` at most once every five
+seconds when results are available. Counts cover completions since the previous
+summary, across all receivers used during that interval. No hits are held for a
+callback or retried. These are MAC-layer results, not confirmation that the base
+played a sound. Immediate `esp_now_send()` submission errors keep their existing
+warning and are separate from callback results. Info-level logging must be
+enabled to see the summaries (the project uses it by default).
+
+`DEBUG` defaults to `OFF` and is remembered by CMake. Disable it explicitly:
+
+```sh
+idf.py -DDEBUG=OFF build
+```
+
+The callback, counters, and periodic reporting are compiled out when disabled.
+This project flag controls diagnostics independently of compiler optimization.
+For stepping through code with a debugger, run `idf.py menuconfig`, select
+**Compiler options → Optimization Level → Debug (-Og)**, save, then build.
+That changes this project's `sdkconfig`, not the SDK source. Keep `DEBUG=ON`
+if you also want the delivery summaries.
 
 The receiver MAC and sphere radius are custom CMake arguments:
 
@@ -51,11 +83,19 @@ idf.py -DMAC=aabbccddeeff -DRADIUS=0.275 build
 
 `MAC` is the receiver's Wi-Fi station MAC written as 12 hex digits without colons.
 It defaults to `000000000000`, a placeholder; it does not change this board's MAC.
-At runtime, send the receiver's 12 hexadecimal digits (for example,
-`aabbccddeeff`) over the USB serial console. A task pinned to core 0 accepts
-uppercase or lowercase and submits the MAC as soon as the twelfth digit arrives;
-Enter is optional. Newlines clear incomplete input. An invalid character rejects
-input until the next newline, so omit colons and spaces.
+At runtime, send a complete command line over the USB serial console:
+
+- `M aabbccddeeff` sets the receiver MAC (12 hex digits).
+- `R 27.5` sets the sphere radius in centimeters for this boot and requests
+  recalibration; hold the stick level and forward when sending it.
+
+Use exactly one space after `M` or `R`, then Enter. Command letters and MAC
+hex digits may be uppercase or lowercase. Radius accepts a positive decimal
+number. Tabs, extra spaces, invalid characters, and lines longer than 31
+characters are rejected. LF, CR, and CRLF are accepted as line endings.
+The task waits for the full line across partial reads, then accepts another
+command; invalid input is discarded through its line ending. In Arduino Serial
+Monitor, select Newline, Carriage return, or Both NL & CR when sending.
 The drumstick loop registers the new ESP-NOW peer, saves its six-byte address as
 the `receiver_mac` blob in the `drumstick` NVS namespace, and switches hit sends
 to that address. It logs success or failure. If registration or persistence fails,
@@ -64,19 +104,26 @@ every boot (including deep-sleep wake); the build-time `MAC` is the fallback
 when no valid blob exists. When the namespace or key is missing, the constructor
 saves the build-time MAC to NVS as the initial address. Subsequent boots preserve
 the stored address, including one configured over serial.
+If NVS initialization reports no free pages or an incompatible stored format,
+startup erases the NVS partition and retries initialization. This recovery loses
+the saved receiver MAC and other NVS settings; the build-time MAC becomes the
+fallback again. Other initialization errors are reported without erasing NVS.
 `RADIUS` is the sphere radius in meters and defaults to `0.275` (27.5 cm).
 Pass a number without a unit suffix, for example `-DRADIUS=0.27` for 27 cm.
+Configuration rejects zero, negative, nonnumeric, and out-of-float-range values.
 CMake remembers both values between builds. GPIOs, the sensor address, and Wi-Fi
 initialization are in `main/Drumstick.cpp`; the reset button pin is in
 `include/Utils.hpp`. The firmware does not explicitly select a Wi-Fi channel.
-Before enabling wireless transmission, configure both sender and receiver to
-use the same channel.
+Configure both sender and receiver to use the same Wi-Fi channel for wireless
+transmission.
 
 ## Current behavior
 
-`main/main.cpp` constructs `bh::Drumstick` and runs its loop. The constructor
-initializes NVS, the event loop, the sensor, Wi-Fi station mode, and ESP-NOW.
-Hit transmission is currently disabled; hits are printed to the USB console.
+`main/main.cpp` initializes NVS and the network interface, constructs
+`bh::Drumstick`, and runs its loop. The constructor initializes the event loop,
+the sensor, Wi-Fi station mode, and ESP-NOW.
+Each hit is sent over ESP-NOW as XYZ plus peak speed and also printed as two
+consecutive USB-console lines compatible with `SticksTestAudio`.
 
 The BNO085 is configured at 100 kHz I2C with a 20 ms clock-stretch allowance.
 The driver requests rotation-vector and calibrated-gyroscope reports at 100 Hz.
@@ -84,8 +131,8 @@ The existing gyro detector arms on a downstroke and fires as it slows or reverse
 Its thresholds and roll-dependent axis selection remain in `main/Drumstick.cpp`.
 `HIT_SPEED_SCALE` preserves its existing tuning and is independent of the sphere
 radius. The active-low state/calibration button uses both GPIO edges and a 10 ms
-stable-level debounce window on press only. Release is accepted immediately;
-a press shorter than two seconds requests calibration. Releasing after a press
+stable-level debounce window on both press and release. A press shorter than
+two seconds requests calibration. Releasing after a press
 of at least two seconds returns from the drumstick loop. `app_main` destroys the
 drumstick to shut down the sensor, I2C, and Wi-Fi, then enters deep sleep with
 GPIO 0 low as the only enabled wake source. Both LEDs are held off and the BNO085
@@ -148,9 +195,10 @@ reports or reports older than 50 ms disarm the detector. Hit positions use the
 latest valid orientation serviced by the firmware, not interpolated strike-time
 poses. The hardware tests will determine whether the model and timing work well.
 
-Capture the `HitXYZ!` lines with the serial monitor when comparing strike
-positions. A base config loader and wireless XYZ packets are
-not part of this serial-only experiment.
+Capture the `Hit!` and `HitXYZ!` lines together with the serial monitor when
+comparing strike positions and speeds. `SticksTestAudio` pairs the speed in
+`Hit!` with the immediately following XYZ record. ESP-NOW carries both values
+together in one packet; all base playing modes receive that same format.
 
 ## Capture a crash
 
@@ -165,11 +213,24 @@ Press Ctrl+] to exit the monitor after the crash. The complete output stays in
 `crash.log`. The panic handler waits five seconds before rebooting so the dump
 remains visible longer. This delay helps capture the error; it does not fix its cause.
 
-`Drumstick::detect_hit()` contains a commented-out ESP-NOW send. Its existing
-payload is a `Coordinates` snapshot (pitch, yaw, roll in radians) followed by a
-float for the detector's peak scaled gyro speed; it does not include XYZ.
-The receiver must use the same layout. Register `ReceiverMAC`
-as a peer and configure the radio channel and antenna before enabling the send.
+`Drumstick::detect_hit()` sends the shared `bh::Packet` defined in
+`../shared/HitPacket.hpp`: four little-endian IEEE-754 floats, X/Y/Z in meters
+followed by the peak scaled gyro speed. Euler angles remain diagnostic fields
+in the serial `Hit!` line only. The receiver validates the same 16-byte format
+for every playing mode. Flash both base and stick when changing from the old
+angle format: its equal byte length cannot identify old firmware automatically.
+
+Hardware checks for the detector's direction and calibration roll are recorded
+in [TESTING.md](TESTING.md). The current detector signs and axis selection are
+preserved pending those measurements.
+
+## Host checks
+
+```sh
+cmake -S tests -B /tmp/sticks-tests
+cmake --build /tmp/sticks-tests
+ctest --test-dir /tmp/sticks-tests --output-on-failure
+```
 
 ## C++ namespace convention
 

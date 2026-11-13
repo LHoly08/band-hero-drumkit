@@ -11,6 +11,7 @@
 #include "esp_netif.h"
 #include "esp_psram.h"
 #include "esp_vfs_fat.h"
+#include "lauxlib.h"
 #include "nvs_flash.h"
 #include "sdmmc_cmd.h"
 
@@ -97,33 +98,46 @@ extern "C" void app_main() {
   auto play = [&]<bh::State S>
     requires bh::Playing<S>
   -> void {
-      lua_State *L = luaL_newstate();
+      class Lua {
+      public:
+        inline Lua() noexcept : m_state(luaL_newstate()) {}
+        inline ~Lua() noexcept {
+          if (m_state) {
+            lua_close(m_state);
+          }
+        }
 
-      if (bool error{false}; luaL_dofile(L, bh::configFile.data()) == LUA_OK)
-          [[likely]] {
+        inline ::lua_State *state() const noexcept { return m_state; }
+
+      private:
+        ::lua_State *m_state = nullptr;
+      };
+
+      Lua L{};
+      const char *errorString;
+
+      if (bool error{false};
+          luaL_dofile(L.state(), bh::configFile.data()) == LUA_OK) [[likely]] {
 
         if constexpr (S == bh::State::PlayingHub) {
-          bh::Play<S> play({.state = state, .macAddress = macAddress}, L,
-                           &error);
+
+          bh::Play<S> play({.state = state, .macAddress = macAddress},
+                           L.state(), &error, errorString);
 
           if (error) {
-            goto ret;
+            return;
           }
           play.loop();
 
         } else {
-          bh::Play<S> play({.state = state}, L, &error);
+          bh::Play<S> play({.state = state}, L.state(), &error, errorString);
 
           if (error) {
-            goto ret;
+            return;
           }
           play.loop();
         }
       }
-
-    ret:
-      lua_close(L);
-      return;
     };
 
 infinite_loop:

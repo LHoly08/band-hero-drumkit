@@ -2,12 +2,21 @@
 #include "Drumstick.hpp"
 #include "Utils.hpp"
 #include "esp_err.h"
+#include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_sleep.h"
 #include "nvs_flash.h"
 
 extern "C" void app_main() {
-  ESP_ERROR_CHECK(::nvs_flash_init());
+  auto nvs_result = ::nvs_flash_init();
+  if (nvs_result == ESP_ERR_NVS_NO_FREE_PAGES ||
+      nvs_result == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    ESP_LOGW("sticks", "Reinitializing NVS after %s; saved receiver MAC is lost",
+             ::esp_err_to_name(nvs_result));
+    ESP_ERROR_CHECK(::nvs_flash_erase());
+    nvs_result = ::nvs_flash_init();
+  }
+  ESP_ERROR_CHECK(nvs_result);
   ESP_ERROR_CHECK(::esp_netif_init());
 
   {
@@ -17,9 +26,12 @@ extern "C" void app_main() {
 
   // The loop returns only for a long press; resources have now been released.
   // Wait for a settled release before arming low-level button wakeup.
-  while (::gpio_get_level(bh::STATE_BUTTON_PIN) == 0) {
+  do {
+    while (::gpio_get_level(bh::STATE_BUTTON_PIN) == 0) {
+      ::vTaskDelay(pdMS_TO_TICKS(bh::BUTTON_DEBOUNCE_MS));
+    }
     ::vTaskDelay(pdMS_TO_TICKS(bh::BUTTON_DEBOUNCE_MS));
-  }
+  } while (::gpio_get_level(bh::STATE_BUTTON_PIN) == 0);
 
   for (const auto pin :
        {bh::GREEN_LED_PIN, bh::RED_LED_PIN, bh::SENSOR_RESET_PIN}) {

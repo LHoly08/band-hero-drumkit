@@ -9,7 +9,6 @@
 #include "SpherePosition.hpp"
 
 #include "driver/gpio.h"
-#include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -47,10 +46,6 @@ struct Coordinates {
   }
 };
 
-// Protect complete coordinate updates shared by the task and button ISR.
-inline DRAM_ATTR ::portMUX_TYPE rotation_mux = portMUX_INITIALIZER_UNLOCKED;
-inline DRAM_ATTR ::portMUX_TYPE position_mux = portMUX_INITIALIZER_UNLOCKED;
-
 enum class Direction : std::uint8_t {
   PositiveReal = 0,
   PositiveImag,
@@ -59,8 +54,8 @@ enum class Direction : std::uint8_t {
 };
 
 inline Direction closest_direction(float radians) noexcept {
-  constexpr float ONE_OVER_HALF_PI = 1 / (std::numbers::pi_v<float> * 0.5);
-  constexpr float TWO_PI = std::numbers::pi_v<float> * 2;
+  constexpr float ONE_OVER_HALF_PI = 1.0f / (std::numbers::pi_v<float> * 0.5f);
+  constexpr float TWO_PI = std::numbers::pi_v<float> * 2.0f;
 
   const float angle = std::remainder(radians, TWO_PI);
   const std::int32_t quadrant =

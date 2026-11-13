@@ -1,13 +1,14 @@
 #ifndef BH_STICK
 #define BH_STICK
 
+#include <atomic>
 #include <cstdint>
 
 #include "bno085.h"
 #include "driver/i2c_master.h"
 
-#include "Utils.hpp"
 #include "SerialMAC.hpp"
+#include "Utils.hpp"
 #include "freertos/projdefs.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -26,10 +27,8 @@ public:
 private:
   bh::Coordinates m_offset{};
   bh::Coordinates m_rotation{};
-  bh::Vector3 m_position{};
   bh::SpherePosition m_tracking{};
   std::uint32_t m_orientation_us{};
-  std::uint32_t m_last_hit_us{};
   float m_top_hit_speed{};
   /*
    has_orientation - 0
@@ -41,7 +40,10 @@ private:
   ::i2c_master_dev_handle_t m_device{};
   ::bno085_handle_t m_sensor{};
   bh::SerialMAC::Address m_receiver_mac{bh::ReceiverMAC};
+  // Serial task overwrites; main loop consumes and applies the latest MAC.
   ::QueueHandle_t m_peer_updates{};
+  // Zero means no pending update; valid radii are positive meters.
+  std::atomic<float> m_pending_radius{0.0f};
   ::TaskHandle_t m_serial_task{};
   ::SemaphoreHandle_t m_serial_stopped{};
 
@@ -49,9 +51,9 @@ private:
   void update_peer(const bh::SerialMAC::Address &address) noexcept;
 
   ::esp_err_t start_sensor() noexcept;
+  void request_calibration() noexcept;
   void update_position(const ::bno085_sensor_value_t &value) noexcept;
   void detect_hit(const ::bno085_sensor_value_t &value) noexcept;
-  void detect_hit_angular(const ::bno085_sensor_value_t &value) noexcept;
 
   static void on_sensor_data(::bno085_handle_t,
                              const ::bno085_sensor_value_t *value,
