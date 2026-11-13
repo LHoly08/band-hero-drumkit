@@ -44,7 +44,7 @@ ESP-IDF downloads the managed BNO085 component during configuration;
 commit `main/idf_component.yml` and `dependencies.lock` to preserve its version.
 The BNO085 driver is configured for one sensor instance to match this board.
 
-### Debug delivery diagnostics
+### Debug hit logs and delivery diagnostics
 
 No ESP-IDF SDK files need editing. Enable this project's diagnostics with:
 
@@ -52,6 +52,9 @@ No ESP-IDF SDK files need editing. Enable this project's diagnostics with:
 idf.py -DDEBUG=ON build
 idf.py -p /dev/ttyACM0 flash monitor
 ```
+
+Debug builds print the paired `Hit!` / `HitXYZ!` records used by
+`SticksTestAudio`, as well as delivery diagnostics.
 
 The ESP-NOW send callback only increments lock-free counters. The main loop
 prints `ESP-NOW send results: ... MAC-acked, ... failed` at most once every five
@@ -68,7 +71,8 @@ enabled to see the summaries (the project uses it by default).
 idf.py -DDEBUG=OFF build
 ```
 
-The callback, counters, and periodic reporting are compiled out when disabled.
+The hit records, callback, counters, and periodic reporting are compiled out
+when disabled.
 This project flag controls diagnostics independently of compiler optimization.
 For stepping through code with a debugger, run `idf.py menuconfig`, select
 **Compiler options → Optimization Level → Debug (-Og)**, save, then build.
@@ -122,8 +126,9 @@ transmission.
 `main/main.cpp` initializes NVS and the network interface, constructs
 `bh::Drumstick`, and runs its loop. The constructor initializes the event loop,
 the sensor, Wi-Fi station mode, and ESP-NOW.
-Each hit is sent over ESP-NOW as XYZ plus peak speed and also printed as two
-consecutive USB-console lines compatible with `SticksTestAudio`.
+Each hit is sent over ESP-NOW as XYZ plus peak speed. With `DEBUG=ON`, it is
+also printed as two consecutive USB-console lines compatible with
+`SticksTestAudio`; default builds omit those hit records.
 
 The BNO085 is configured at 100 kHz I2C with a 20 ms clock-stretch allowance.
 The driver requests rotation-vector and calibrated-gyroscope reports at 100 Hz.
@@ -166,7 +171,8 @@ estimated position when their references agree.
 
 To try it:
 
-1. Build and flash the stick, then open its serial monitor.
+1. Build with `idf.py -DDEBUG=ON build`, flash the stick, then open its
+   serial monitor so the hit records are visible.
 2. Hold the stick level, pointing toward your intended forward direction.
    Press and release the existing state/calibration button in under two seconds.
    Calibration occurs on release for a button connected to ground.
@@ -227,13 +233,11 @@ Hardware checks for the detector's direction and calibration roll are recorded
 in [TESTING.md](TESTING.md). The current detector signs and axis selection are
 preserved pending those measurements.
 
-## Host checks
+## Validation
 
-```sh
-cmake -S tests -B /tmp/sticks-tests
-cmake --build /tmp/sticks-tests
-ctest --test-dir /tmp/sticks-tests --output-on-failure
-```
+This repository currently has no host test suite. Use the build and flash
+commands above, then follow [TESTING.md](TESTING.md) for detector direction and
+calibration-roll checks on hardware. Enable `DEBUG=ON` when capturing hit records.
 
 ## C++ namespace convention
 

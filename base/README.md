@@ -1,4 +1,35 @@
-# Base audio playback
+# Drum base firmware
+
+ESP32-S3 receiver with Lua pad configuration and freestyle I2S audio playback.
+The firmware starts in an unfinished configuration state; mode selection and
+SD mounting must be implemented before it can play from boot.
+
+## Build and flash
+
+From `base/` in an activated ESP-IDF 6 environment, use CMake 3.31 or newer
+and a C++26 toolchain supporting `<meta>` and `-freflection`:
+
+```sh
+idf.py -DMAC=001122334455 build
+idf.py -p /dev/ttyACM0 flash monitor
+```
+
+Use your board's actual serial port. CMake forces the `esp32s3` target and
+generates defaults for 8 MB flash, octal PSRAM at 80 MHz, and USB Serial/JTAG
+console. Check those settings against your board with `idf.py menuconfig`.
+Audio requires core 1, so single-core mode must be disabled.
+
+`MAC` is the downstream hub's Wi-Fi station address: exactly 12 hexadecimal
+digits without colons. Its default is the placeholder `000000000000`; the
+base does not currently accept serial commands to change it. Configure each
+stick's receiver separately to the base's station MAC and use the same Wi-Fi
+channel for communicating devices.
+
+Initial configuration downloads pinned u8g2 and Lua sources into the build
+directory, plus the managed audio codec/effects dependencies. Keep
+`main/idf_component.yml` and `dependencies.lock` with the project.
+
+## Audio playback
 
 `bh::AudioPlayer` sends mono signed 16-bit PCM to a Philips I2S DAC or
 amplifier. Its FreeRTOS task runs on ESP32-S3 core 1 at priority 5. Mixing
@@ -72,14 +103,16 @@ Malformed fields and capacity overflow report configuration errors. Only
 freestyle decodes audio; serial/hub modes do not need PCM buffers. Setup lives
 in `main/Playing.cpp` and remains shared and non-inlined across playing modes.
 
-Run the mixer and Lua configuration tests on the host (after configuring the
-firmware so the pinned Lua sources exist):
+The configuration path is currently the relative `config.lua` string in
+`include/Utils.hpp`; no example configuration is shipped. When implementing
+SD startup, connect this path and each audio path to the mounted filesystem.
+The `hit` table is a consecutive Lua array starting at index 1; loading stops
+at the first missing entry. Lua standard libraries are not opened by the
+current entry point. Configuration or audio setup failures enter `ConfigError`,
+whose UI is also unfinished.
 
-```sh
-cmake -S tests -B /tmp/base-tests
-cmake --build /tmp/base-tests
-ctest --test-dir /tmp/base-tests --output-on-failure
-```
+There is currently no host test suite in this repository. Validate pad loading
+and audio playback on the board after the startup flow is connected.
 
 ## Wireless stick input
 
@@ -95,3 +128,9 @@ matching. Serial/hub output to the game remains the
 existing note bitmask. Hit speed still does not change base playback volume.
 Flash the matching stick firmware as well: legacy angle packets have the same
 byte length and cannot be distinguished from XYZ packets by this format.
+
+In serial/hub modes, pedal bits come first and stick-pad bits follow in their
+configured order. Output is a four-byte note value sent only when it changes.
+The current implementation evaluates these outputs only when a stick packet
+arrives and ORs new hits into the previous value without clearing old bits;
+repeated-hit and release handling remains unfinished.

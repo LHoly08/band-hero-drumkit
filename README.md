@@ -19,12 +19,15 @@ toolchain. The base also requires the compiler's reflection support. Each
 project has its own configuration and build directory; there is no combined
 root build.
 
+From the repository root, build the sticks:
+
 ```sh
 cd sticks
 idf.py -DMAC=001122334455 build
 ```
 
-The base explicitly targets ESP32-S3 (including PSRAM and core-1 audio):
+In a separate shell at the repository root, build the base. It explicitly
+targets ESP32-S3 (including PSRAM and core-1 audio):
 
 ```sh
 cd base
@@ -33,7 +36,15 @@ idf.py build
 
 CMake downloads the pinned u8g2 component and Lua sources during the base's
 initial configuration. See each project's README for wiring, configuration,
-and host-test commands. Use `-DDEBUG=ON` for sticks serial hit capture.
+and current limitations. Use `-DDEBUG=ON` for sticks serial hit capture.
+The repository currently contains no host test suites; stick hardware checks
+are listed in [sticks/TESTING.md](sticks/TESTING.md).
+
+For sticks, `MAC` identifies the receiving drum base. For the base, `MAC`
+identifies the downstream game hub when using hub mode; configure it with
+`idf.py -DMAC=001122334455 build` from `base/`. Both default to an all-zero
+placeholder. The stick can save a new receiver over serial; the base currently
+uses only its build-time hub address.
 
 ## C++ namespace convention
 
