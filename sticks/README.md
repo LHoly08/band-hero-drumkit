@@ -191,11 +191,14 @@ Hits are suppressed until calibration. The main loop does not probe or
 automatically recover a disconnected sensor; reboot after reconnecting it.
 Near-vertical reset poses cannot define a heading; keep reset
 pending by pointing level until calibration succeeds. Invalid orientation
-reports or reports older than 50 ms disarm the detector. Hit positions use the
+reports, orientation callbacks older than 50 ms, or gyro/orientation report
+timestamps more than 50 ms apart disarm the detector. Hit positions use the
 latest valid orientation serviced by the firmware, not interpolated strike-time
 poses. The hardware tests will determine whether the model and timing work well.
 
-Capture the `Hit!` and `HitXYZ!` lines together with the serial monitor when
+Build with `idf.py -DDEBUG=ON build` to enable the `Hit!`/`HitXYZ!` records
+required by `SticksTestAudio`. Default (`DEBUG=OFF`) builds send hits only over
+ESP-NOW. Capture the `Hit!` and `HitXYZ!` lines together with the serial monitor when
 comparing strike positions and speeds. `SticksTestAudio` pairs the speed in
 `Hit!` with the immediately following XYZ record. ESP-NOW carries both values
 together in one packet; all base playing modes receive that same format.

@@ -29,6 +29,7 @@ private:
   bh::Coordinates m_rotation{};
   bh::SpherePosition m_tracking{};
   std::uint32_t m_orientation_us{};
+  std::uint64_t m_orientation_report_us{};
   float m_top_hit_speed{};
   /*
    has_orientation - 0

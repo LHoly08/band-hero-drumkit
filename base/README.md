@@ -58,17 +58,27 @@ do not move-assign or destroy it until `stop()` returns. The freestyle player
 stops its audio worker before destroying its pads. Use `start()`, `play()`
 and `stop()` from the same producer task, not from an ISR.
 
-The existing application still has an unfinished Config state and does not
-populate the pad collections from Lua. Those need to be implemented before
-the drumkit can play from boot. This change provides the audio engine and
-wires the existing pad playback methods to it.
+The application still boots into an unfinished Config state, and SD mounting
+is not yet connected to the startup flow. These must be completed before the
+drumkit can play from boot. Playing modes now populate pads from the Lua `hit`
+array. `Drum`, `Cymbal`, and `Pedal` constants are registered before executing
+`config.lua`. Pedal positions are integers 1–4 mapped to GPIO1–GPIO4; positions
+must be unique. The limit is 30 total pads, including at most four pedals.
 
-Run the mixer tests on the host:
+Stick pads require finite numeric `position.x/y/z`, a positive `radius`, and an
+`audio` path. `tilt` is optional. Supply `alternate_radius` and `alternate_audio`
+together; the alternate radius must be positive and no larger than the pad.
+Malformed fields and capacity overflow report configuration errors. Only
+freestyle decodes audio; serial/hub modes do not need PCM buffers. Setup lives
+in `main/Playing.cpp` and remains shared and non-inlined across playing modes.
+
+Run the mixer and Lua configuration tests on the host (after configuring the
+firmware so the pinned Lua sources exist):
 
 ```sh
-g++ -std=c++20 -Wall -Wextra -Werror -fsanitize=undefined \
-    -Iinclude tests/audio_mixer_test.cpp -o /tmp/base-audio-mixer-test
-/tmp/base-audio-mixer-test
+cmake -S tests -B /tmp/base-tests
+cmake --build /tmp/base-tests
+ctest --test-dir /tmp/base-tests --output-on-failure
 ```
 
 ## Wireless stick input

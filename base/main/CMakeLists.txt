@@ -2,6 +2,7 @@ idf_component_register(
     SRCS 
       "main.cpp"
       "Pads.cpp"
+      "Playing.cpp"
       "Utils.cpp"
       "Audio.cpp"
     INCLUDE_DIRS "../include" "../../shared"

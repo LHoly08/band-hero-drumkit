@@ -51,6 +51,9 @@ public:
 
   File &operator=(File &&other) noexcept {
     if (this != &other) {
+      if (m_file) {
+        std::fclose(m_file);
+      }
       m_file = std::exchange(other.m_file, nullptr);
     }
 

@@ -1,85 +1,21 @@
 #include <lua.hpp>
 
 #include <cstdio>
-#include <cstring>
+#include <memory>
 
 #include "Playing.hpp"
 #include "Utils.hpp"
 #include "esp_err.h"
 #include "esp_event.h"
-#include "esp_heap_caps.h"
 #include "esp_netif.h"
-#include "esp_psram.h"
-#include "esp_vfs_fat.h"
 #include "lauxlib.h"
 #include "nvs_flash.h"
-#include "sdmmc_cmd.h"
 
-#include "driver/sdmmc_host.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 extern "C" void app_main() {
-  /*
-  #if CONFIG_SPIRAM
-    const std::size_t psram_size = ::esp_psram_get_size();
-    std::printf("Total PSRAM: %zu bytes (%zu MiB)\n", psram_size,
-                psram_size / (1024 * 1024));
-
-    if (::esp_psram_is_initialized()) {
-      constexpr char message[] = "Hello from PSRAM!";
-      auto *psram_string = static_cast<char *>(
-          ::heap_caps_malloc(sizeof(message), MALLOC_CAP_SPIRAM |
-  MALLOC_CAP_8BIT)); if (psram_string) { std::memcpy(psram_string, message,
-  sizeof(message)); std::printf("String stored in PSRAM: %s\n", psram_string);
-        ::heap_caps_free(psram_string);
-      } else {
-        std::printf("PSRAM string allocation failed\n");
-      }
-    } else {
-      std::printf("PSRAM is not initialized\n");
-    }
-  #else
-    std::printf("PSRAM support is disabled in sdkconfig\n");
-  #endif
-
-    ::sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-
-    ::sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
-    slot.width = 1;
-    slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-
-    ::esp_vfs_fat_sdmmc_mount_config_t config{};
-    config.format_if_mount_failed = false;
-    config.max_files = 5;
-    config.allocation_unit_size = 16 * 1024;
-
-    ::sdmmc_card_t *card = nullptr;
-    ::esp_err_t err =
-        ::esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot, &config, &card);
-
-    if (err != ESP_OK) {
-      std::printf("SD mount failed: %s\n", ::esp_err_to_name(err));
-      return;
-    }
-
-    ::sdmmc_card_print_info(stdout, card);
-
-    // Append a line each time the board boots.
-    std::FILE *file = std::fopen("/sdcard/test.txt", "a");
-    if (file) {
-      if (std::fputs("Hello from ESP32-CAM!\n", file) < 0)
-        std::perror("Write failed");
-
-      if (std::fclose(file) != 0)
-        std::perror("Close failed");
-    } else {
-      std::perror("Open failed");
-    }
-
-    ESP_ERROR_CHECK(::esp_vfs_fat_sdcard_unmount("/sdcard", card));
-  */
   ESP_ERROR_CHECK(::nvs_flash_init());
   ESP_ERROR_CHECK(::esp_netif_init());
   ESP_ERROR_CHECK(::esp_event_loop_create_default());
@@ -98,45 +34,38 @@ extern "C" void app_main() {
   auto play = [&]<bh::State S>
     requires bh::Playing<S>
   -> void {
-      class Lua {
-      public:
-        inline Lua() noexcept : m_state(luaL_newstate()) {}
-        inline ~Lua() noexcept {
-          if (m_state) {
-            lua_close(m_state);
-          }
-        }
-
-        inline ::lua_State *state() const noexcept { return m_state; }
-
-      private:
-        ::lua_State *m_state = nullptr;
+      std::unique_ptr<::lua_State, decltype(&::lua_close)> lua{
+          ::luaL_newstate(), &::lua_close};
+      auto fail = [&](const char *message) {
+        ESP_LOGE("Play", "%s", message ? message : "Configuration failed");
+        state.store(bh::State::ConfigError, std::memory_order_relaxed);
       };
-
-      Lua L{};
-      const char *errorString;
-
-      if (bool error{false};
-          luaL_dofile(L.state(), bh::configFile.data()) == LUA_OK) [[likely]] {
-
-        if constexpr (S == bh::State::PlayingHub) {
-
-          bh::Play<S> play({.state = state, .macAddress = macAddress},
-                           L.state(), &error, errorString);
-
-          if (error) {
-            return;
-          }
-          play.loop();
-
-        } else {
-          bh::Play<S> play({.state = state}, L.state(), &error, errorString);
-
-          if (error) {
-            return;
-          }
-          play.loop();
+      if (!lua) {
+        fail("Cannot allocate Lua state");
+        return;
+      }
+      bh::registerPadTypes(lua.get());
+      if (luaL_dofile(lua.get(), bh::configFile.data()) != LUA_OK) {
+        fail(lua_tostring(lua.get(), -1));
+        return;
+      }
+      bool error = false;
+      const char *errorString = nullptr;
+      if constexpr (S == bh::State::PlayingHub) {
+        bh::Play<S> play({.state = state, .macAddress = macAddress},
+                         lua.get(), &error, errorString);
+        if (error) {
+          fail(errorString);
+          return;
         }
+        play.loop();
+      } else {
+        bh::Play<S> play({.state = state}, lua.get(), &error, errorString);
+        if (error) {
+          fail(errorString);
+          return;
+        }
+        play.loop();
       }
     };
 
@@ -144,9 +73,11 @@ infinite_loop:
 
   switch (state.load(std::memory_order_relaxed)) {
   case bh::State::Config: {
+    ::vTaskDelay(pdMS_TO_TICKS(20));
     break;
   }
   case bh::State::ConfigError: {
+    ::vTaskDelay(pdMS_TO_TICKS(20));
     break;
   }
   case bh::State::PlayingFreestyle: {

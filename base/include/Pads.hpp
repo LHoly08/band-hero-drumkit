@@ -2,6 +2,7 @@
 #define BH_PADS
 
 #include "Audio.hpp"
+#include "PadConfig.hpp"
 #include "Queue.hpp"
 #include "Utils.hpp"
 
@@ -17,12 +18,6 @@ namespace bh {
 
 // Thickness in meters.
 inline float Tolerance = 0.05f;
-
-enum class PadType : std::uint8_t {
-  Drum = 0,
-  Cymbal,
-  Pedal,
-};
 
 template <PadType Type, bool Exists> struct Alternate {};
 
@@ -184,7 +179,7 @@ template <bool hasAlternate>
 Pad<PadType::Pedal, hasAlternate>::Pad(::gpio_num_t pin,
                                        bh::mp3File &&audio) noexcept
     : m_pin{pin}, m_audio{std::move(audio)} {
-  const auto result = ::gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+  const auto result = ::gpio_install_isr_service(0);
   if (result != ESP_ERR_INVALID_STATE) {
     ESP_ERROR_CHECK(result);
   }

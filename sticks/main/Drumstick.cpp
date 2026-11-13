@@ -12,6 +12,7 @@
 #include "ButtonPress.hpp"
 #include "HitPacket.hpp"
 #include "SerialCommand.hpp"
+#include "ReportTiming.hpp"
 #include "Utils.hpp"
 #include "bno085.h"
 #include "esp_attr.h"
@@ -47,7 +48,6 @@ constexpr float HIT_SPEED_SCALE = 3.0f;
 constexpr float HIT_THRESHOLD_ANGULAR = 6.0f;
 constexpr float HIT_RELEASE_THRESHOLD_ANGULAR = 0.5f;
 
-constexpr std::uint32_t MAX_ORIENTATION_AGE_US = 50000;
 constexpr std::uint32_t SENSOR_READY_EVENT = 1u << 0;
 constexpr std::uint32_t BUTTON_CHANGED_EVENT = 1u << 1;
 constexpr char NVS_NAMESPACE[] = "drumstick";
@@ -486,6 +486,7 @@ void bh::Drumstick::update_position(
   // Sensor callbacks run synchronously on the loop task via bno085_service().
   m_rotation = moved;
   m_orientation_us = static_cast<std::uint32_t>(::esp_timer_get_time());
+  m_orientation_report_us = value.timestamp_us;
   set_condition<true, Condition::has_orientation>(m_condition);
 }
 
@@ -494,7 +495,8 @@ void bh::Drumstick::detect_hit(const ::bno085_sensor_value_t &value) noexcept {
 
   if (get_condition<Condition::reset_pending>(m_condition) ||
       !get_condition<Condition::has_orientation>(m_condition) ||
-      std::uint32_t(now_us - m_orientation_us) > MAX_ORIENTATION_AGE_US)
+      !bh::orientationFresh(now_us, m_orientation_us, value.timestamp_us,
+                            m_orientation_report_us))
       [[unlikely]] {
     set_condition<false, Condition::hit_armed>(m_condition);
     m_top_hit_speed = 0.0f;
@@ -524,6 +526,12 @@ void bh::Drumstick::detect_hit(const ::bno085_sensor_value_t &value) noexcept {
   }
   }
 
+  if (!std::isfinite(speed)) {
+    set_condition<false, Condition::hit_armed>(m_condition);
+    m_top_hit_speed = 0.0f;
+    return;
+  }
+
   if (speed <= -HIT_THRESHOLD_ANGULAR) [[likely]] {
     set_condition<true, Condition::hit_armed>(m_condition);
     m_top_hit_speed = (-speed > m_top_hit_speed) ? -speed : m_top_hit_speed;
@@ -541,11 +549,13 @@ void bh::Drumstick::detect_hit(const ::bno085_sensor_value_t &value) noexcept {
       .coords = {position.x, position.y, position.z}, .speed = m_top_hit_speed};
 
   // One write keeps the two records adjacent for SticksTestAudio's HitReader.
+#if BH_DEBUG
   std::printf("Hit! Roll: %.3f  Pitch: %.3f  Yaw: %.3f (rad), Speed: %.3f\n"
               "HitXYZ! X: %.3f  Y: %.3f  Z: %.3f (m)\n",
               relative_rotation.roll, relative_rotation.pitch,
               relative_rotation.yaw, packet.speed, packet.coords.x,
               packet.coords.y, packet.coords.z);
+#endif
 
   const esp_err_t status = esp_now_send(
       m_receiver_mac.data(), reinterpret_cast<const std::uint8_t *>(&packet),

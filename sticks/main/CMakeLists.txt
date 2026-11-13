@@ -16,7 +16,7 @@ idf_component_register(
         esp_timer
 )
 
-option(DEBUG "Enable debug-only ESP-NOW delivery diagnostics" OFF)
+option(DEBUG "Enable serial hit logs and ESP-NOW delivery diagnostics" OFF)
 
 set(MAC "000000000000" CACHE STRING "Base MAC, 12 hex digits")
 string(LENGTH "${MAC}" MAC_LENGTH)
