@@ -12,3 +12,25 @@ _deps
 CMakeUserPresets.json
 build/
 sdkconfig
+
+# Additional CMake build output
+build-*/
+cmake-build-*/
+CMakeLists.txt.user.*
+
+# ESP-IDF generated files (keep sdkconfig.defaults and dependencies.lock)
+managed_components/
+sdkconfig.old
+
+# Local editor and tool state
+.cache/
+.clangd
+.vscode/
+.idea/
+.nvimlog
+*.swp
+*.swo
+
+# Operating system metadata
+.DS_Store
+Thumbs.db

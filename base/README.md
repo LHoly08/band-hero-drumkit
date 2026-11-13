@@ -14,9 +14,10 @@ idf.py -DMAC=001122334455 build
 idf.py -p /dev/ttyACM0 flash monitor
 ```
 
-Use your board's actual serial port. CMake forces the `esp32s3` target and
-generates defaults for 8 MB flash, octal PSRAM at 80 MHz, and USB Serial/JTAG
-console. Check those settings against your board with `idf.py menuconfig`.
+Use your board's actual serial port. CMake forces the `esp32s3` target.
+`sdkconfig.defaults` selects 8 MB flash, the large single-app partition, octal
+PSRAM at 80 MHz, and the USB Serial/JTAG console. Check those settings against
+your board with `idf.py menuconfig`.
 Audio requires core 1, so single-core mode must be disabled.
 
 `MAC` is the downstream hub's Wi-Fi station address: exactly 12 hexadecimal

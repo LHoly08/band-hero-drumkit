@@ -5,22 +5,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(IDF_TARGET "esp32s3" CACHE STRING "Target ESP chip" FORCE)
 
-# Keep board defaults and downloaded dependencies in the build directory.
-file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}")
-set(BH_SDKCONFIG_DEFAULTS "${CMAKE_BINARY_DIR}/sdkconfig.board.defaults")
-file(WRITE "${BH_SDKCONFIG_DEFAULTS}" "\
-CONFIG_IDF_TARGET=\"esp32s3\"
-CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
-CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
-CONFIG_SPIRAM=y
-CONFIG_SPIRAM_MODE_OCT=y
-CONFIG_SPIRAM_SPEED_80M=y
-CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
-CONFIG_COMPILER_OPTIMIZATION_PERF=y
-CONFIG_U8G2_DISPLAY_DRIVER_SH1106=y
-")
-set(SDKCONFIG_DEFAULTS "${BH_SDKCONFIG_DEFAULTS}")
-
+# Use the checked-in sdkconfig.defaults; download dependencies into the build directory.
 include(FetchContent)
 # Same OLED component/revision used by band-hero-hub (nixy4/u8g2 0.1.4).
 FetchContent_Declare(bh_u8g2
