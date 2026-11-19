@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <limits>
 #include <string_view>
+#include <meta>
 
 namespace bh {
 
@@ -28,12 +29,10 @@ struct PadConfig {
 };
 
 inline void registerPadTypes(::lua_State *lua) {
-  lua_pushinteger(lua, static_cast<lua_Integer>(PadType::Drum));
-  lua_setglobal(lua, "Drum");
-  lua_pushinteger(lua, static_cast<lua_Integer>(PadType::Cymbal));
-  lua_setglobal(lua, "Cymbal");
-  lua_pushinteger(lua, static_cast<lua_Integer>(PadType::Pedal));
-  lua_setglobal(lua, "Pedal");
+  template for (constexpr auto Pad_t : std::define_static_array(std::meta::enumerators_of(^^PadType))) {
+    lua_pushinteger(lua, static_cast<lua_Integer>([:Pad_t:]));
+    lua_setglobal(lua, std::meta::identifier_of(Pad_t));
+  }
 }
 
 // Always restore the caller's Lua stack, including on malformed fields.

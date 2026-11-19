@@ -31,9 +31,6 @@ void setup(void *context, bh::State state, ::lua_State *luaFile, bool *error,
   case bh::State::PlayingSerial:
     play = static_cast<Play<bh::State::PlayingSerial> *>(context);
     break;
-  default:
-    fail("Invalid playing state");
-    return;
   }
 
   const auto result = ::gpio_install_isr_service(0);
@@ -60,6 +57,7 @@ void setup(void *context, bh::State state, ::lua_State *luaFile, bool *error,
         ESP_ERROR_CHECK(::gpio_isr_handler_add(
             bh::PIN, bh::modeButtonPressed, &selected->m_references.state));
         ESP_ERROR_CHECK(::esp_now_register_recv_cb(selected->ReceivedCallback));
+        
         if constexpr (std::is_same_v<std::remove_pointer_t<decltype(selected)>,
                                      Play<bh::State::PlayingHub>>) {
           ::esp_now_peer_info_t peer{};
@@ -87,7 +85,7 @@ void setup(void *context, bh::State state, ::lua_State *luaFile, bool *error,
     return;
   }
   const int hit = lua_gettop(luaFile);
-  std::array<bool, 4> usedPedals{};
+  std::uint8_t usedPedals{};
   for (lua_Integer index = 1;; ++index) {
     lua_rawgeti(luaFile, hit, index);
     if (lua_isnil(luaFile, -1)) {
@@ -106,7 +104,7 @@ void setup(void *context, bh::State state, ::lua_State *luaFile, bool *error,
       fail("Configuration exceeds 30 pads or 4 pedals");
       return;
     }
-    if (pad.type == bh::PadType::Pedal && usedPedals[pad.pedalIndex]) {
+    if (pad.type == bh::PadType::Pedal && ((usedPedals << pad.pedalIndex) & 0b1)) {
       fail("Pedal positions must be unique");
       return;
     }
@@ -123,7 +121,7 @@ void setup(void *context, bh::State state, ::lua_State *luaFile, bool *error,
       std::visit([&](auto *selected) {
         selected->m_pedals.emplace_back(pins[pad.pedalIndex], std::move(audio));
       }, play);
-      usedPedals[pad.pedalIndex] = true;
+      usedPedals |= (1 << pad.pedalIndex);
     } else {
       bh::mp3File alternateAudio;
       if (pad.hasAlternate && state == bh::State::PlayingFreestyle) {
