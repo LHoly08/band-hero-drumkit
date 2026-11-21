@@ -124,7 +124,6 @@ Play<S>::~Play() noexcept {
     ::esp_now_deinit();
     ::esp_wifi_stop();
     ::esp_wifi_deinit();
-    ::gpio_isr_handler_remove(bh::PIN);
     instance = nullptr;
   }
   if constexpr (S == bh::State::PlayingFreestyle) {

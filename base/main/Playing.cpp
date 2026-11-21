@@ -31,6 +31,8 @@ void setup(void *context, bh::State state, ::lua_State *luaFile, bool *error,
   case bh::State::PlayingSerial:
     play = static_cast<Play<bh::State::PlayingSerial> *>(context);
     break;
+  default:
+    break;
   }
 
   const auto result = ::gpio_install_isr_service(0);
@@ -54,10 +56,8 @@ void setup(void *context, bh::State state, ::lua_State *luaFile, bool *error,
   std::visit(
       [&](auto *selected) {
         selected->instance = selected;
-        ESP_ERROR_CHECK(::gpio_isr_handler_add(
-            bh::PIN, bh::modeButtonPressed, &selected->m_references.state));
         ESP_ERROR_CHECK(::esp_now_register_recv_cb(selected->ReceivedCallback));
-        
+
         if constexpr (std::is_same_v<std::remove_pointer_t<decltype(selected)>,
                                      Play<bh::State::PlayingHub>>) {
           ::esp_now_peer_info_t peer{};
@@ -68,7 +68,8 @@ void setup(void *context, bh::State state, ::lua_State *luaFile, bool *error,
             fail("Cannot register hub peer; check MAC configuration");
           }
         }
-      }, play);
+      },
+      play);
   if (*error) {
     return;
   }
@@ -96,15 +97,18 @@ void setup(void *context, bh::State state, ::lua_State *luaFile, bool *error,
       *error = true;
       return;
     }
-    const bool room = std::visit([&](auto *selected) {
-      return bh::canAddPad(pad.type, selected->m_sticks.size(),
-                          selected->m_pedals.size());
-    }, play);
+    const bool room = std::visit(
+        [&](auto *selected) {
+          return bh::canAddPad(pad.type, selected->m_sticks.size(),
+                               selected->m_pedals.size());
+        },
+        play);
     if (!room) {
       fail("Configuration exceeds 30 pads or 4 pedals");
       return;
     }
-    if (pad.type == bh::PadType::Pedal && ((usedPedals << pad.pedalIndex) & 0b1)) {
+    if (pad.type == bh::PadType::Pedal &&
+        ((usedPedals << pad.pedalIndex) & 0b1)) {
       fail("Pedal positions must be unique");
       return;
     }
@@ -117,10 +121,14 @@ void setup(void *context, bh::State state, ::lua_State *luaFile, bool *error,
       return;
     }
     if (pad.type == bh::PadType::Pedal) {
-      static constexpr std::array pins{GPIO_NUM_1, GPIO_NUM_2, GPIO_NUM_3, GPIO_NUM_4};
-      std::visit([&](auto *selected) {
-        selected->m_pedals.emplace_back(pins[pad.pedalIndex], std::move(audio));
-      }, play);
+      static constexpr std::array pins{GPIO_NUM_1, GPIO_NUM_2, GPIO_NUM_3,
+                                       GPIO_NUM_4};
+      std::visit(
+          [&](auto *selected) {
+            selected->m_pedals.emplace_back(pins[pad.pedalIndex],
+                                            std::move(audio));
+          },
+          play);
       usedPedals |= (1 << pad.pedalIndex);
     } else {
       bh::mp3File alternateAudio;
@@ -137,20 +145,24 @@ void setup(void *context, bh::State state, ::lua_State *luaFile, bool *error,
         constexpr bh::PadType Pad_t = [:type:];
         if (pad.type == Pad_t) {
           if (pad.hasAlternate) {
-            bh::Alternate<Pad_t, true> alternate{
-                pad.alternateRadius * pad.alternateRadius,
-                std::move(alternateAudio)};
+            bh::Alternate<Pad_t, true> alternate{pad.alternateRadius *
+                                                     pad.alternateRadius,
+                                                 std::move(alternateAudio)};
             bh::Pad<Pad_t, true> value{pad.position, pad.radius, pad.tilt,
-                                      std::move(audio), std::move(alternate)};
-            std::visit([&value](auto *selected) {
-              selected->m_sticks.emplace_back(std::move(value));
-            }, play);
+                                       std::move(audio), std::move(alternate)};
+            std::visit(
+                [&value](auto *selected) {
+                  selected->m_sticks.emplace_back(std::move(value));
+                },
+                play);
           } else {
             bh::Pad<Pad_t, false> value{pad.position, pad.radius, pad.tilt,
-                                       std::move(audio)};
-            std::visit([&value](auto *selected) {
-              selected->m_sticks.emplace_back(std::move(value));
-            }, play);
+                                        std::move(audio)};
+            std::visit(
+                [&value](auto *selected) {
+                  selected->m_sticks.emplace_back(std::move(value));
+                },
+                play);
           }
         }
       }

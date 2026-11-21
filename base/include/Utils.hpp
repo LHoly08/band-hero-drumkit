@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <meta>
 #include <string_view>
 #include <utility>
 
@@ -19,10 +20,21 @@ namespace bh {
 enum class State : std::uint32_t {
   Config = 0,
   ConfigError,
+  PlayingFreestyle,
   PlayingSerial,
   PlayingHub,
-  PlayingFreestyle,
 };
+
+inline void operator++(State &s) {
+  std::uint32_t value = static_cast<std::uint32_t>(s) + 1;
+  constexpr std::uint32_t lastValue =
+      static_cast<std::uint32_t>([:std::meta::enumerators_of(^^State).back():]);
+  s = (value > lastValue) ? State::PlayingFreestyle : static_cast<State>(value);
+}
+
+constexpr ::gpio_num_t STATE_BUTTON_PIN = ::GPIO_NUM_0; // Not Final!!!
+
+constexpr std::uint32_t BUTTON_POLL_MS = 10;
 
 using AtomicState = std::atomic<State>;
 // ESP-IDF's PSRAM workaround can use software-backed atomics on Xtensa.
@@ -30,7 +42,6 @@ using AtomicState = std::atomic<State>;
 
 using MAC = std::array<std::uint8_t, 6>;
 
-constexpr std::string_view configFile = "config.lua";
 inline constexpr std::uint32_t audioSampleRate = 24000;
 
 class File {
@@ -92,35 +103,6 @@ private:
 };
 
 constexpr ::gpio_num_t PIN = ::GPIO_NUM_20;
-
-constexpr std::uint32_t BUTTON_DEBOUNCE_MS = 200;
-constexpr ::TickType_t BUTTON_DEBOUNCE_TICKS =
-    (BUTTON_DEBOUNCE_MS * configTICK_RATE_HZ + 999) / 1000;
-static_assert(sizeof(::TickType_t) == sizeof(std::uint32_t));
-
-struct ButtonDebounce {
-  ::TickType_t last_press_tick{0};
-  bool has_press{false};
-
-  bool IRAM_ATTR accept() noexcept {
-    const ::TickType_t now = ::xTaskGetTickCountFromISR();
-    // Unsigned subtraction also handles tick-counter wraparound.
-    if (has_press &&
-        ::TickType_t(now - last_press_tick) < BUTTON_DEBOUNCE_TICKS) {
-      return false;
-    }
-    last_press_tick = now;
-    has_press = true;
-    return true;
-  }
-};
-
-// Accessed only by the serialized GPIO ISRs; persist across mode changes.
-inline DRAM_ATTR ButtonDebounce mode_button_debounce{};
-
-// Keep the IRAM handler out of class templates so Xtensa places its literal
-// pool alongside the handler instead of in a separate COMDAT section.
-void modeButtonPressed(void *args) noexcept;
 
 template <bool Pulldown> struct OppositeEdge;
 

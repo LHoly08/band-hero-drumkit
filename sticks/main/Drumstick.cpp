@@ -11,8 +11,8 @@
 
 #include "ButtonPress.hpp"
 #include "HitPacket.hpp"
-#include "SerialCommand.hpp"
 #include "ReportTiming.hpp"
+#include "SerialCommand.hpp"
 #include "Utils.hpp"
 #include "bno085.h"
 #include "esp_attr.h"
@@ -48,13 +48,12 @@ constexpr float HIT_SPEED_SCALE = 3.0f;
 constexpr float HIT_THRESHOLD_ANGULAR = 6.0f;
 constexpr float HIT_RELEASE_THRESHOLD_ANGULAR = 0.5f;
 
-constexpr std::uint32_t SENSOR_READY_EVENT = 1u << 0;
-constexpr std::uint32_t BUTTON_CHANGED_EVENT = 1u << 1;
 constexpr char NVS_NAMESPACE[] = "drumstick";
 constexpr char NVS_PEER_KEY[] = "receiver_mac";
 
 #if BH_DEBUG
-// Static lifetime: the Wi-Fi callback never accesses a Drumstick being destroyed.
+// Static lifetime: the Wi-Fi callback never accesses a Drumstick being
+// destroyed.
 static_assert(std::atomic<std::uint32_t>::is_always_lock_free);
 std::atomic<std::uint32_t> send_successes{};
 std::atomic<std::uint32_t> send_failures{};
@@ -63,8 +62,10 @@ constexpr std::int64_t SEND_REPORT_INTERVAL_US = 5'000'000;
 
 void on_send_result(const ::esp_now_send_info_t *,
                     ::esp_now_send_status_t status) noexcept {
-  // Runs on the high-priority Wi-Fi task: no logging, waiting, or retrying here.
-  auto &counter = status == ESP_NOW_SEND_SUCCESS ? send_successes : send_failures;
+  // Runs on the high-priority Wi-Fi task: no logging, waiting, or retrying
+  // here.
+  auto &counter =
+      status == ESP_NOW_SEND_SUCCESS ? send_successes : send_failures;
   counter.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -98,10 +99,10 @@ void report_send_results() noexcept {
   return result;
 }
 
-void IRAM_ATTR sensor_data_ready(void *context) noexcept {
+void IRAM_ATTR wake_loop_from_gpio(void *context) noexcept {
   ::BaseType_t task_woken = pdFALSE;
-  xTaskNotifyFromISR(static_cast<::TaskHandle_t>(context), SENSOR_READY_EVENT,
-                     eSetBits, &task_woken);
+  xTaskNotifyFromISR(static_cast<::TaskHandle_t>(context), 0, eNoAction,
+                     &task_woken);
   if (task_woken) {
     portYIELD_FROM_ISR();
   }
@@ -133,17 +134,6 @@ inline static constexpr bool get_condition(std::uint8_t conditions) {
 
 } // namespace
 
-void IRAM_ATTR bh::Drumstick::reset_button_pressed(void *args) noexcept {
-  if (args != nullptr) {
-    ::BaseType_t task_woken = pdFALSE;
-    xTaskNotifyFromISR(static_cast<::TaskHandle_t>(args), BUTTON_CHANGED_EVENT,
-                       eSetBits, &task_woken);
-    if (task_woken) {
-      portYIELD_FROM_ISR();
-    }
-  }
-}
-
 bh::Drumstick::Drumstick() noexcept {
   for (const auto pin :
        {bh::GREEN_LED_PIN, bh::RED_LED_PIN, bh::SENSOR_RESET_PIN}) {
@@ -168,6 +158,7 @@ bh::Drumstick::Drumstick() noexcept {
     ESP_ERROR_CHECK(::esp_wifi_start());
 
     ESP_ERROR_CHECK(::esp_now_init());
+
 #if BH_DEBUG
     send_successes.store(0, std::memory_order_relaxed);
     send_failures.store(0, std::memory_order_relaxed);
@@ -227,16 +218,11 @@ bh::Drumstick::Drumstick() noexcept {
 
   // Consume the wake press so it cannot calibrate or send us back to sleep.
   if (::esp_sleep_get_wakeup_causes() & (1u << ESP_SLEEP_WAKEUP_GPIO)) {
-    do {
-      while (::gpio_get_level(bh::STATE_BUTTON_PIN) == 0) {
-        ::vTaskDelay(pdMS_TO_TICKS(bh::BUTTON_DEBOUNCE_MS));
-      }
-      ::vTaskDelay(pdMS_TO_TICKS(bh::BUTTON_DEBOUNCE_MS));
-    } while (::gpio_get_level(bh::STATE_BUTTON_PIN) == 0);
+    bh::wait_for_button_release();
   }
 
   ESP_ERROR_CHECK(::gpio_isr_handler_add(
-      bh::STATE_BUTTON_PIN, reset_button_pressed, xTaskGetCurrentTaskHandle()));
+      bh::STATE_BUTTON_PIN, wake_loop_from_gpio, xTaskGetCurrentTaskHandle()));
 
   {
     ::i2c_master_bus_config_t bus_config{};
@@ -275,7 +261,7 @@ bh::Drumstick::Drumstick() noexcept {
 
   // Wake the task immediately when the active-low data-ready signal asserts.
   ESP_ERROR_CHECK(::gpio_set_intr_type(::GPIO_NUM_2, ::GPIO_INTR_NEGEDGE));
-  ESP_ERROR_CHECK(::gpio_isr_handler_add(::GPIO_NUM_2, sensor_data_ready,
+  ESP_ERROR_CHECK(::gpio_isr_handler_add(::GPIO_NUM_2, wake_loop_from_gpio,
                                          xTaskGetCurrentTaskHandle()));
 
   // Only the latest unread MAC matters; xQueueOverwrite requires one slot.
@@ -496,8 +482,7 @@ void bh::Drumstick::detect_hit(const ::bno085_sensor_value_t &value) noexcept {
   if (get_condition<Condition::reset_pending>(m_condition) ||
       !get_condition<Condition::has_orientation>(m_condition) ||
       !bh::orientationFresh(now_us, m_orientation_us, value.timestamp_us,
-                            m_orientation_report_us))
-      [[unlikely]] {
+                            m_orientation_report_us)) [[unlikely]] {
     set_condition<false, Condition::hit_armed>(m_condition);
     m_top_hit_speed = 0.0f;
     return;
@@ -545,8 +530,8 @@ void bh::Drumstick::detect_hit(const ::bno085_sensor_value_t &value) noexcept {
   set_condition<false, Condition::hit_armed>(m_condition);
 
   const auto position = m_tracking.position();
-  const bh::Packet packet{
-      .coords = {position.x, position.y, position.z}, .speed = m_top_hit_speed};
+  const bh::Packet packet{.coords = {position.x, position.y, position.z},
+                          .speed = m_top_hit_speed};
 
   // One write keeps the two records adjacent for SticksTestAudio's HitReader.
 #if BH_DEBUG
@@ -609,11 +594,11 @@ void bh::Drumstick::loop() noexcept {
     switch (button.update(
         ::gpio_get_level(bh::STATE_BUTTON_PIN) == 0,
         static_cast<std::uint32_t>(::esp_timer_get_time() / 1000))) {
-    case Action::Calibrate: {
+    case Action::ShortPress: { // Calibrate
       request_calibration();
       break;
     }
-    case Action::Sleep: {
+    case Action::LongPress: { // Sleep
       return; // app_main destroys this object before entering deep sleep.
     }
     case Action::None: {

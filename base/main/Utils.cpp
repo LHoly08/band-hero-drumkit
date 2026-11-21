@@ -6,20 +6,13 @@
 
 #include "Utils.hpp"
 
+#include "esp_ae_rate_cvt.h"
+#include "esp_audio_simple_dec.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "esp_audio_simple_dec.h"
 #include "esp_mp3_dec.h"
-#include "esp_ae_rate_cvt.h"
 
 namespace bh {
-
-void IRAM_ATTR modeButtonPressed(void *args) noexcept {
-  if (args != nullptr && mode_button_debounce.accept()) {
-    static_cast<bh::AtomicState *>(args)->store(bh::State::Config,
-                                              std::memory_order_relaxed);
-  }
-}
 
 bh::mp3File::mp3File(std::string_view file) noexcept {
   constexpr const char *tag = "mp3File";
@@ -97,8 +90,8 @@ bh::mp3File::mp3File(std::string_view file) noexcept {
           ::esp_audio_simple_dec_process(decoder.get(), &raw, &out);
       if (result == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH &&
           out.needed_size > frameSize) {
-        auto *larger = static_cast<std::uint8_t *>(::heap_caps_realloc(
-            frame.get(), out.needed_size, MALLOC_CAP_8BIT));
+        auto *larger = static_cast<std::uint8_t *>(
+            ::heap_caps_realloc(frame.get(), out.needed_size, MALLOC_CAP_8BIT));
         if (!larger) {
           ESP_LOGE(tag, "Cannot grow decoder frame buffer");
           return;
@@ -120,9 +113,8 @@ bh::mp3File::mp3File(std::string_view file) noexcept {
             info.bits_per_sample != 16 || !info.sample_rate ||
             (info.channel != 1 && info.channel != 2) ||
             out.decoded_size % (sizeof(std::uint16_t) * info.channel) != 0 ||
-            (format.sample_rate &&
-             (info.sample_rate != format.sample_rate ||
-              info.channel != format.channel))) {
+            (format.sample_rate && (info.sample_rate != format.sample_rate ||
+                                    info.channel != format.channel))) {
           ESP_LOGE(tag, "Unsupported or changing PCM format");
           return;
         }
@@ -141,7 +133,8 @@ bh::mp3File::mp3File(std::string_view file) noexcept {
           if (rateResult != ESP_AE_ERR_OK || !resampler) {
             ESP_LOGE(tag, "Cannot resample MP3 from %lu to %lu Hz: %d",
                      static_cast<unsigned long>(info.sample_rate),
-                     static_cast<unsigned long>(bh::audioSampleRate), rateResult);
+                     static_cast<unsigned long>(bh::audioSampleRate),
+                     rateResult);
             return;
           }
         }
@@ -163,23 +156,23 @@ bh::mp3File::mp3File(std::string_view file) noexcept {
         constexpr std::uint32_t sampleBytes = sizeof(std::int16_t);
         const auto inputSamples = monoSize / sampleBytes;
         std::uint32_t outputSamples = inputSamples;
-        if (resampler &&
-            ::esp_ae_rate_cvt_get_max_out_sample_num(
-                resampler.get(), inputSamples, &outputSamples) != ESP_AE_ERR_OK) {
+        if (resampler && ::esp_ae_rate_cvt_get_max_out_sample_num(
+                             resampler.get(), inputSamples, &outputSamples) !=
+                             ESP_AE_ERR_OK) {
           ESP_LOGE(tag, "Cannot determine resampled frame size");
           return;
         }
-        if (!outputSamples ||
-            outputSamples > (maxSize - size) / sampleBytes) {
+        if (!outputSamples || outputSamples > (maxSize - size) / sampleBytes) {
           ESP_LOGE(tag, "Decoded PCM is too large");
           return;
         }
         const auto required = size + outputSamples * sampleBytes;
         if (required > capacity) {
-          const auto nextCapacity = std::max(
-              required, capacity == 0 ? 16384u
-                                     : (capacity > maxSize / 2 ? maxSize
-                                                               : capacity * 2));
+          const auto nextCapacity =
+              std::max(required,
+                       capacity == 0
+                           ? 16384u
+                           : (capacity > maxSize / 2 ? maxSize : capacity * 2));
           auto *larger = static_cast<std::uint8_t *>(::heap_caps_realloc(
               pcm.get(), nextCapacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
           if (!larger) {

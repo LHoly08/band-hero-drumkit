@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <numbers>
 
+#include "ButtonPress.hpp"
 #include "SpherePosition.hpp"
 
 #include "driver/gpio.h"
@@ -31,6 +32,15 @@ constexpr ::gpio_num_t RED_LED_PIN = ::GPIO_NUM_19;
 constexpr ::gpio_num_t SENSOR_RESET_PIN = ::GPIO_NUM_21;
 
 constexpr std::uint32_t BUTTON_POLL_MS = 10;
+
+inline void wait_for_button_release() noexcept {
+  do {
+    while (::gpio_get_level(bh::STATE_BUTTON_PIN) == 0) {
+      ::vTaskDelay(pdMS_TO_TICKS(bh::BUTTON_DEBOUNCE_MS));
+    }
+    ::vTaskDelay(pdMS_TO_TICKS(bh::BUTTON_DEBOUNCE_MS));
+  } while (::gpio_get_level(bh::STATE_BUTTON_PIN) == 0);
+}
 
 static_assert(sizeof(::TickType_t) == sizeof(std::uint32_t));
 

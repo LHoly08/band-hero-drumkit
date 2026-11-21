@@ -31,6 +31,12 @@ project(band-hero)
 idf_component_get_property(BH_U8G2_LIB u8g2 COMPONENT_LIB)
 target_link_libraries(${BH_U8G2_LIB} PRIVATE idf::esp_driver_gpio)
 
+# The SH1106 family glob misses the shared SSD1306/SH1106 128x64 driver.
+if(CONFIG_U8G2_DISPLAY_DRIVER_SH1106)
+    target_sources(${BH_U8G2_LIB} PRIVATE
+        "${bh_u8g2_SOURCE_DIR}/src/driver/u8x8_d_ssd1306_128x64_noname.c")
+endif()
+
 idf_build_set_property(COMPILE_OPTIONS "-O2" APPEND)
 
 # Embed the Lua C API and standard libraries, excluding the CLI tools.

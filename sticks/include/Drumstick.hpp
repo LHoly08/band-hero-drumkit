@@ -59,7 +59,6 @@ private:
   static void on_sensor_data(::bno085_handle_t,
                              const ::bno085_sensor_value_t *value,
                              void *context) noexcept;
-  static void reset_button_pressed(void *args) noexcept;
 };
 
 } // namespace bh

@@ -3,13 +3,14 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
+#include <cstdint>
 
 #include "SerialMAC.hpp"
 
 namespace bh {
 
 struct SerialCommand {
-  enum class Kind { None, Receiver, Radius, Invalid };
+  enum class Kind : std::uint8_t { None, Receiver, Radius, Invalid };
   Kind kind{Kind::None};
   bh::SerialMAC::Address address{};
   float radius_meters{};
@@ -47,14 +48,8 @@ private:
       return {Kind::Invalid};
     }
     if (m_line[0] == 'M' || m_line[0] == 'm') {
-      if (m_size != 14) {
-        return {Kind::Invalid};
-      }
-      bh::SerialMAC parser;
-      for (std::size_t i = 2; i < m_size; ++i) {
-        if (const auto address = parser.push(m_line[i])) {
-          return {Kind::Receiver, *address};
-        }
+      if (const auto address = SerialMAC::parse(m_line + 2)) {
+        return {Kind::Receiver, *address};
       }
       return {Kind::Invalid};
     }
@@ -81,7 +76,7 @@ private:
   }
 
   char m_line[32]{};
-  std::size_t m_size{};
+  std::uint8_t m_size{};
   bool m_discard{};
 };
 

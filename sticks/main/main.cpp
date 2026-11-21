@@ -1,4 +1,3 @@
-#include "ButtonPress.hpp"
 #include "Drumstick.hpp"
 #include "Utils.hpp"
 #include "esp_err.h"
@@ -26,12 +25,7 @@ extern "C" void app_main() {
 
   // The loop returns only for a long press; resources have now been released.
   // Wait for a settled release before arming low-level button wakeup.
-  do {
-    while (::gpio_get_level(bh::STATE_BUTTON_PIN) == 0) {
-      ::vTaskDelay(pdMS_TO_TICKS(bh::BUTTON_DEBOUNCE_MS));
-    }
-    ::vTaskDelay(pdMS_TO_TICKS(bh::BUTTON_DEBOUNCE_MS));
-  } while (::gpio_get_level(bh::STATE_BUTTON_PIN) == 0);
+  bh::wait_for_button_release();
 
   for (const auto pin :
        {bh::GREEN_LED_PIN, bh::RED_LED_PIN, bh::SENSOR_RESET_PIN}) {

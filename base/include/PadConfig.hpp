@@ -8,8 +8,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <string_view>
 #include <meta>
+#include <string_view>
 
 namespace bh {
 
@@ -29,9 +29,13 @@ struct PadConfig {
 };
 
 inline void registerPadTypes(::lua_State *lua) {
-  template for (constexpr auto Pad_t : std::define_static_array(std::meta::enumerators_of(^^PadType))) {
-    lua_pushinteger(lua, static_cast<lua_Integer>([:Pad_t:]));
-    lua_setglobal(lua, std::meta::identifier_of(Pad_t));
+  template for (constexpr auto Pad_t : std::define_static_array(
+                    std::meta::enumerators_of(^^PadType))) {
+    constexpr auto padValue = [:Pad_t:];
+    constexpr auto padName =
+        std::define_static_string(std::meta::identifier_of(Pad_t));
+    lua_pushinteger(lua, static_cast<lua_Integer>(padValue));
+    lua_setglobal(lua, padName);
   }
 }
 
@@ -99,8 +103,7 @@ inline bool readPadConfig(::lua_State *lua, int table, PadConfig &out,
   }
   lua_getfield(lua, table, "position");
   const int position = lua_gettop(lua);
-  if (!lua_istable(lua, position) ||
-      !number(position, "x", out.position.x) ||
+  if (!lua_istable(lua, position) || !number(position, "x", out.position.x) ||
       !number(position, "y", out.position.y) ||
       !number(position, "z", out.position.z)) {
     return fail("Position must contain finite numeric x, y and z");
