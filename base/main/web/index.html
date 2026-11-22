@@ -1,6 +1,5 @@
 <!doctype html>
 <html lang="en">
-
 <head>
   <meta charset="utf-8">
   <meta name="color-scheme" content="dark light">
@@ -9,131 +8,114 @@
   <link rel="stylesheet" href="style.css">
   <script defer src="app.js"></script>
 </head>
-
 <body>
   <header class="top">
     <div class="bar">
-      <div class="brand"><i class="mark" aria-hidden="true"><b></b><b></b><b></b><b></b></i>Band Hero</div><span
-        class="division">Drum studio</span><span class="device"><i></i> Device offline</span>
+      <strong>Band Hero</strong>
+      <span id="device-status">Connecting to drum base…</span>
     </div>
   </header>
-  <main>
-    <p class="crumb">Workspace <span>/</span> Configuration</p>
-    <div class="heading">
-      <div>
-        <h1>Kit configuration</h1>
-        <p>Configure your pad layout and sound assignments.</p>
-      </div><button disabled>Save kit</button>
-    </div>
-    <div class="workspace">
-      <section class="card map">
-        <header class="panel">
-          <h2>Kit layout</h2><span class="pill">Top view</span>
-        </header>
-        <div class="plot" role="img"
-          aria-label="Top view of a six-pad kit. Snare 01 is selected at lower left, rack tom 02 is centered, floor tom 03 is on the right, cymbals 04 and 05 are above, and kick pedal 06 is below.">
-          <span class="orientation">PLAYER VIEW</span>
-          <div class="kit" aria-hidden="true">
-            <i class="rack"></i><i class="stand left"></i><i class="stand right"></i>
-            <div class="part cymbal hat"><b>04</b></div>
-            <div class="part cymbal crash"><b>05</b></div>
-            <div class="part drum tom"><b>02</b></div>
-            <div class="part drum floor"><b>03</b></div>
-            <div class="part drum snare"><b>01</b></div>
-            <div class="part pedal"><b>06</b></div>
-          </div>
-        </div>
-        <footer class="legend"><span><i class="key picked"></i>Selected pad</span><span><i
-              class="key"></i>Drum</span><span><i class="key cym"></i>Cymbal</span><span><i
-              class="key foot"></i>Pedal</span></footer>
-      </section>
-      <section class="card inspector">
-        <header class="panel">
-          <h2>Pad inspector</h2><span class="pill purple">Pad 01</span>
-        </header>
-        <div class="details">
-          <div class="identity"><span class="mini drumicon" aria-hidden="true"></span>
-            <div>
-              <h3>Snare</h3><small>Drum pad</small>
-            </div>
-          </div>
-          <h4>Position</h4>
-          <div class="coords">
-            <div><em>X</em> −18</div>
-            <div><em>Y</em> 12</div>
-            <div><em>Z</em> 8</div>
-          </div>
-          <div class="pair">
-            <div>
-              <h4>Radius</h4>
-              <div class="field">10</div>
-            </div>
-            <div>
-              <h4>Tilt <small>(rad)</small></h4>
-              <div class="field">0.10</div>
-            </div>
-          </div>
-          <h4>Audio sample</h4>
-          <div class="field sample"><span aria-hidden="true">♫</span> snare.mp3</div>
-        </div>
-      </section>
-    </div>
-    <section class="card assignments">
-      <header class="panel">
-        <h2>Pad assignments</h2><span class="count">6 pads</span>
-      </header>
-      <div class="scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Pad</th>
-              <th>Name</th>
-              <th>Type</th>
-              <th>Audio sample</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr id="pad01" onmouseenter="PadAssignment.onEnter('pad01')" onmouseleave="PadAssignment.onLeave('pad01')">
-              <td>01</td>
-              <th scope="row">Snare</th>
-              <td>Drum</td>
-              <td>snare.mp3</td>
-            </tr>
-            <tr id="pad02" onmouseenter="PadAssignment.onEnter('pad02')" onmouseleave="PadAssignment.onLeave('pad02')">
-              <td>02</td>
-              <th scope="row">Rack tom</th>
-              <td>Drum</td>
-              <td>rack-tom.mp3</td>
-            </tr>
-            <tr id="pad03" onmouseenter="PadAssignment.onEnter('pad03')" onmouseleave="PadAssignment.onLeave('pad03')">
-              <td>03</td>
-              <th scope="row">Floor tom</th>
-              <td>Drum</td>
-              <td>floor-tom.mp3</td>
-            </tr>
-            <tr id="pad04" onmouseenter="PadAssignment.onEnter('pad04')" onmouseleave="PadAssignment.onLeave('pad04')">
-              <td>04</td>
-              <th scope="row">Hi-hat</th>
-              <td>Cymbal</td>
-              <td>hi-hat.mp3</td>
-            </tr>
-            <tr id="pad05" onmouseenter="PadAssignment.onEnter('pad05')" onmouseleave="PadAssignment.onLeave('pad05')">
-              <td>05</td>
-              <th scope="row">Crash</th>
-              <td>Cymbal</td>
-              <td>crash.mp3</td>
-            </tr>
-            <tr id="pad06" onmouseenter="PadAssignment.onEnter('pad06')" onmouseleave="PadAssignment.onLeave('pad06')">
-              <td>06</td>
-              <th scope="row">Kick</th>
-              <td>Pedal</td>
-              <td>kick.mp3</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-  </main>
-</body>
 
+  <main>
+    <div class="heading">
+      <h1>Kit configuration</h1>
+      <button class="primary" id="save-kit" type="button" disabled>Save kit</button>
+    </div>
+    <p class="muted status" id="kit-status" role="status"></p>
+
+    <div class="workspace">
+      <section class="card" aria-labelledby="assignments-heading">
+        <header class="panel">
+          <h2 id="assignments-heading">Pads <small id="pad-count"></small></h2>
+          <button id="add-pad" type="button" disabled>Add pad</button>
+        </header>
+        <div class="empty" id="list-empty">
+          <p id="list-message">Loading kit…</p>
+          <button id="retry-load" type="button" hidden>Retry</button>
+        </div>
+        <ol id="pad-list" aria-label="Pads in matching order" hidden></ol>
+        <p class="muted order-note" id="order-note" hidden>First match wins when pads overlap.</p>
+      </section>
+
+      <section class="card" aria-labelledby="inspector-heading">
+        <header class="panel" id="inspector">
+          <h2 id="inspector-heading">Pad inspector</h2>
+          <div class="order-actions" id="order-actions" hidden>
+            <button id="move-up" type="button" aria-label="Move pad up" title="Move pad up">↑</button>
+            <button id="move-down" type="button" aria-label="Move pad down" title="Move pad down">↓</button>
+          </div>
+        </header>
+        <p class="empty" id="inspector-empty">Select a pad to edit.</p>
+        <fieldset id="pad-editor" aria-label="Selected pad settings" hidden>
+          <label class="inline" for="pad-type">Type
+            <select id="pad-type">
+              <option>Drum</option>
+              <option>Cymbal</option>
+              <option>Pedal</option>
+            </select>
+          </label>
+
+          <div class="fields" id="stick-fields">
+            <p class="muted" id="position-help">Position (m) from your chest. X right, Y forward, Z up.</p>
+            <div class="coords">
+              <label>X <input id="position-x" type="number" step="any" aria-describedby="position-help"></label>
+              <label>Y <input id="position-y" type="number" step="any" aria-describedby="position-help"></label>
+              <label>Z <input id="position-z" type="number" step="any" aria-describedby="position-help"></label>
+            </div>
+            <div class="pair">
+              <label>Radius (m) <input id="pad-radius" type="number" step="any" min="0"></label>
+              <label>Tilt (rad, optional) <input id="pad-tilt" type="number" step="any" placeholder="0"></label>
+            </div>
+          </div>
+
+          <label class="inline" id="pedal-fields" hidden>Pedal input
+            <select id="pedal-input">
+              <option value="">Select an input</option>
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+            </select>
+          </label>
+
+          <div class="sample-field">
+            <label>Audio sample <input id="pad-audio" type="text" placeholder="/sdcard/sounds/sample.mp3" spellcheck="false"></label>
+            <button id="browse-audio" type="button">Browse</button>
+          </div>
+
+          <div class="fields" id="alternate-section">
+            <label class="check"><input id="alternate-enabled" type="checkbox"> Add a second sound for the <span id="alternate-zone"></span></label>
+            <div class="fields" id="alternate-fields" hidden>
+              <label>Zone boundary radius (m) <input id="alternate-radius" type="number" step="any" min="0"></label>
+              <div class="sample-field">
+                <label>Second audio sample <input id="alternate-audio" type="text" spellcheck="false"></label>
+                <button id="browse-alternate" type="button">Browse</button>
+              </div>
+            </div>
+          </div>
+          <button class="remove" id="remove-pad" type="button">Remove pad</button>
+        </fieldset>
+      </section>
+    </div>
+  </main>
+
+  <dialog class="card" id="sample-dialog" aria-labelledby="sample-heading">
+    <header class="panel">
+      <h2 id="sample-heading">Audio samples</h2>
+      <form method="dialog"><button autofocus>Close</button></form>
+    </header>
+    <p class="muted" id="samples-status" role="status"></p>
+    <div id="sample-list"></div>
+  </dialog>
+
+  <template id="pad-row">
+    <li>
+      <button class="pad-row" type="button" aria-pressed="false">
+        <span class="pad-index"></span>
+        <strong></strong>
+        <small></small>
+      </button>
+    </li>
+  </template>
+</body>
 </html>
