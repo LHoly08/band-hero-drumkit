@@ -1,6 +1,7 @@
 #ifndef BH_PLAY
 #define BH_PLAY
 
+#include "KitConfig.hpp"
 #include "Pads.hpp"
 #include "Utils.hpp"
 
@@ -9,13 +10,11 @@
 #include "esp_log.h"
 #include "esp_now.h"
 #include "esp_wifi.h"
-#include "lua.h"
 
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <inplace_vector>
-#include <lua.hpp>
 #include <meta>
 #include <ranges>
 #include <string_view>
@@ -33,17 +32,6 @@ namespace detail {
 
 template <bh::State S>
   requires Playing<S>
-struct NeededReferences {
-  bh::AtomicState &state;
-};
-
-template <> struct NeededReferences<bh::State::PlayingHub> {
-  bh::AtomicState &state;
-  const bh::MAC &macAddress;
-};
-
-template <bh::State S>
-  requires Playing<S>
 struct RequiredPacketType {
   using Packet_t = bh::Vec3;
 };
@@ -56,14 +44,14 @@ template <> struct RequiredPacketType<bh::State::PlayingFreestyle> {
 
 // Keep setup shared between playing modes.
 [[gnu::noinline]]
-void setup(void *context, bh::State state, ::lua_State *luaFile, bool *error,
+void setup(void *context, bh::State state, const KitConfig &kit, bool *error,
            const char *&errorString);
 
 template <bh::State S>
   requires Playing<S>
 class Play {
 public:
-  Play(detail::NeededReferences<S> references, ::lua_State *luaFile,
+  Play(AtomicState &state, const KitConfig &kit,
        bool *error, const char *&errorString) noexcept;
   ~Play() noexcept;
 
@@ -75,10 +63,11 @@ private:
   static void ReceivedCallback(const ::esp_now_recv_info_t *esp_now_info,
                                const std::uint8_t *data, int data_len) noexcept;
 
-  friend void setup(void *context, bh::State state, ::lua_State *luaFile,
+  friend void setup(void *context, bh::State state, const KitConfig &kit,
                     bool *error, const char *&errorString);
 
-  detail::NeededReferences<S> m_references;
+  AtomicState &m_state;
+  const KitConfig &m_kit;
   std::uint32_t m_note{};
 
   using Packet_t = detail::RequiredPacketType<S>::Packet_t;
@@ -97,9 +86,9 @@ Play<S> *Play<S>::instance = nullptr;
 
 template <bh::State S>
   requires Playing<S>
-Play<S>::Play(detail::NeededReferences<S> references, ::lua_State *luaFile,
+Play<S>::Play(AtomicState &state, const KitConfig &kit,
               bool *error, const char *&errorString) noexcept
-    : m_references{references} {
+    : m_state(state), m_kit(kit) {
   assert(error != nullptr);
 
   if constexpr (S == bh::State::PlayingFreestyle) {
@@ -113,7 +102,7 @@ Play<S>::Play(detail::NeededReferences<S> references, ::lua_State *luaFile,
     }
   }
 
-  setup(this, S, luaFile, error, errorString);
+  setup(this, S, kit, error, errorString);
 }
 
 template <bh::State S>
@@ -142,6 +131,8 @@ void Play<S>::ReceivedCallback(const ::esp_now_recv_info_t *esp_now_info,
     return;
   }
 
+  // Every stick sends XYZ followed by speed. Hub and serial modes queue only the
+  // XYZ prefix.
   Packet_t packet;
   std::memcpy(&packet, data, sizeof(packet));
 
@@ -152,7 +143,7 @@ template <bh::State S>
   requires Playing<S>
 void Play<S>::loop() noexcept {
 
-  while (m_references.state.load(std::memory_order_relaxed) == S) {
+  while (m_state.load(std::memory_order_relaxed) == S) {
 
     if constexpr (S == bh::State::PlayingFreestyle) {
       for (const auto &pedal : m_pedals) {
@@ -164,6 +155,8 @@ void Play<S>::loop() noexcept {
 
       if constexpr (S != bh::State::PlayingFreestyle) {
 
+        // The wire format assigns the low bits to pedals, followed by one bit per
+        // stick pad.
         const std::uint8_t pedalsSize = m_pedals.size();
 
         std::uint32_t val = m_note;
@@ -176,8 +169,8 @@ void Play<S>::loop() noexcept {
         for (const auto &[i, pad] :
              std::as_const(m_sticks) | std::ranges::views::enumerate) {
           const bool isInside = std::visit(
-              [&packet](const auto &pad) -> bool {
-                return pad.inside(packet, nullptr);
+              [this, &packet](const auto &pad) -> bool {
+                return pad.inside(packet, m_kit.tolerance, nullptr);
               },
               pad);
           if (isInside) {
@@ -194,7 +187,7 @@ void Play<S>::loop() noexcept {
 
           } else if constexpr (S == bh::State::PlayingHub) {
 
-            (void)::esp_now_send(m_references.macAddress.data(),
+            (void)::esp_now_send(m_kit.macAddress.data(),
                                  reinterpret_cast<const std::uint8_t *>(&val),
                                  sizeof(val));
           }
@@ -206,7 +199,7 @@ void Play<S>::loop() noexcept {
           const bool isInside = std::visit(
               [this, &packet](const auto &pad) -> bool {
                 float radialSquared{};
-                const bool hit = pad.inside(packet.coords, &radialSquared);
+                const bool hit = pad.inside(packet.coords, m_kit.tolerance, &radialSquared);
 
                 if (hit) {
                   pad.play(m_audio, radialSquared, packet.speed);

@@ -16,9 +16,6 @@
 
 namespace bh {
 
-// Thickness in meters.
-inline float Tolerance = 0.05f;
-
 template <PadType Type, bool Exists> struct Alternate {};
 
 template <PadType Type> struct Alternate<Type, true> {
@@ -48,15 +45,17 @@ public:
   Pad(Pad &&other) noexcept;
   Pad &operator=(Pad &&other) noexcept;
 
-  inline bool inside(const bh::Vec3 &point,
+  inline bool inside(const bh::Vec3 &point, float tolerance,
                      float *savedRadialSquared) const noexcept {
     const bh::Vec3 d = point - m_position;
     const float h = d.dot(m_axis);
 
-    if (std::abs(h) > Tolerance) {
+    if (std::abs(h) > tolerance) {
       return false;
     }
 
+    // Subtract the squared height along the pad normal to get the squared distance
+    // within the pad plane.
     const float radialSquared = d.dot(d) - h * h;
     if (savedRadialSquared) {
       *savedRadialSquared = radialSquared;
@@ -159,6 +158,8 @@ public:
   }
 
   inline bool pressed() const noexcept {
+    // Consume the latched edge once. Multiple edges before this poll count as one
+    // press.
     return m_pressed.exchange(false, std::memory_order_relaxed);
   }
 
@@ -190,9 +191,9 @@ Pad<PadType::Pedal, hasAlternate>::Pad(::gpio_num_t pin,
 
     cfg.pin_bit_mask = 1ULL << pin;
     cfg.mode = ::GPIO_MODE_INPUT;
-    cfg.pull_up_en = (gpio_pullup_t)ISR_CFG::pull_up;
-    cfg.pull_down_en = (gpio_pulldown_t)ISR_CFG::pull_down;
-    cfg.intr_type = (gpio_int_type_t)ISR_CFG::intr_type;
+    cfg.pull_up_en = (::gpio_pullup_t)ISR_CFG::pull_up;
+    cfg.pull_down_en = (::gpio_pulldown_t)ISR_CFG::pull_down;
+    cfg.intr_type = (::gpio_int_type_t)ISR_CFG::intr_type;
 
     ESP_ERROR_CHECK(::gpio_config(&cfg));
   }

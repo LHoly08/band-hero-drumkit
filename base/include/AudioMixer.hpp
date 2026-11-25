@@ -41,6 +41,8 @@ public:
           voice.pcm = nullptr;
         }
       }
+      // Clamp once after summing all voices so opposite-signed samples can cancel
+      // before clipping.
       sample = static_cast<std::int16_t>(
           std::clamp<std::int32_t>(mixed, -32768, 32767));
     }

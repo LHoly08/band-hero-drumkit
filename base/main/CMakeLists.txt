@@ -6,13 +6,20 @@ idf_component_register(
       "Utils.cpp"
       "Audio.cpp"
       "Config.cpp"
-      "Oled.cpp"
+      "Web.cpp"
+      "KitConfig.cpp"
     INCLUDE_DIRS "../include" "../../shared"
-    REQUIRES nvs_flash esp_wifi esp_event esp_netif esp_timer
-             esp_driver_i2c esp_driver_gpio esp_driver_i2s u8g2 freertos
-             fatfs sdmmc esp_driver_sdmmc esp_psram
-    PRIV_REQUIRES esp_audio_codec esp_audio_effects
+    REQUIRES esp_http_server nvs_flash esp_wifi esp_event esp_netif esp_timer
+             esp_driver_i2c esp_driver_gpio esp_driver_i2s freertos
+             fatfs sdmmc esp_driver_sdspi esp_driver_spi esp_psram
+    PRIV_REQUIRES cjson esp_audio_codec esp_audio_effects
 )
+
+if(OLED)
+    target_sources(${COMPONENT_LIB} PRIVATE "Oled.cpp")
+    target_link_libraries(${COMPONENT_LIB} PUBLIC idf::u8g2)
+endif()
+target_compile_definitions(${COMPONENT_LIB} PUBLIC BH_OLED=$<BOOL:${OLED}>)
 
 set(MAC "000000000000" CACHE STRING "Hub MAC, 12 hex digits")
 string(LENGTH "${MAC}" MAC_LENGTH)
@@ -20,7 +27,7 @@ if(NOT MAC_LENGTH EQUAL 12 OR NOT MAC MATCHES "^[0-9A-Fa-f]+$")
     message(FATAL_ERROR "MAC must contain exactly 12 hexadecimal digits, without colons")
 endif()
 
-target_compile_definitions(${COMPONENT_LIB} PRIVATE BH_MAC=0x${MAC}ULL)
+target_compile_definitions(${COMPONENT_LIB} PRIVATE BH_ESP32_CAM_SD=$<BOOL:${ESP32_CAM_SD}> BH_MAC=0x${MAC}ULL)
 
 target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_26)
 

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <title>Band Hero snare drum</title>
+  <rect width="32" height="32" rx="7" fill="#302440"/>
+  <path d="M4 15h24v8c0 7-24 7-24 0z" fill="#ba94f2"/>
+  <ellipse cx="16" cy="15" rx="12" ry="4.5" fill="#f8f3ff"/>
+  <path d="M9 20v4m7-3v5m7-6v4" fill="none" stroke="#594078" stroke-width="2" stroke-linecap="round"/>
+  <path d="m8 5 9 9m9-10-9 8" fill="none" stroke="#302440" stroke-width="4" stroke-linecap="round"/>
+  <path d="m8 5 9 9m9-10-9 8" fill="none" stroke="#efc77e" stroke-width="2.4" stroke-linecap="round"/>
+</svg>

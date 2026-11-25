@@ -1,5 +1,5 @@
-#ifndef BH_OLED
-#define BH_OLED
+#ifndef BH_OLED_HPP
+#define BH_OLED_HPP
 
 #include "Playing.hpp"
 #include "Utils.hpp"
@@ -24,8 +24,19 @@ public:
   void drawBase() noexcept;
   inline void drawLoading() noexcept {
     ::u8g2_SetFont(&m_oled, ::u8g2_font_6x10_tf);
-    ::u8g2_DrawStr(&m_oled, 2, 2, "Loading Config File");
+    ::u8g2_DrawStr(&m_oled, 2, 10, "Loading Config File");
   }
+  inline void drawWeb(std::string_view ssid, std::string_view pass,
+                      std::string_view ip) {
+    ::u8g2_SetFont(&m_oled, ::u8g2_font_6x10_tf);
+    ::u8g2_DrawStr(&m_oled, 2, 40, "SSID: ");
+    ::u8g2_DrawStr(&m_oled, 32, 40, ssid.data());
+    ::u8g2_DrawStr(&m_oled, 2, 48, "PASS: ");
+    ::u8g2_DrawStr(&m_oled, 32, 48, pass.data());
+    ::u8g2_DrawStr(&m_oled, 2, 56, "IP: ");
+    ::u8g2_DrawStr(&m_oled, 20, 56, ip.data());
+  }
+
   template <bh::State S>
     requires bh::Playing<S>
   void drawState() noexcept;
@@ -39,7 +50,7 @@ template <bh::State S>
 void Oled::drawState() noexcept {
   ::u8g2_SetFont(&m_oled, ::u8g2_font_6x10_tf);
 
-  ::u8g2_DrawStr(&m_oled, 2, 2, []<bh::State State>() consteval -> auto {
+  ::u8g2_DrawStr(&m_oled, 2, 10, []<bh::State State>() consteval -> auto {
     constexpr std::string_view prefix = "Playing";
 
     for (const auto &info :

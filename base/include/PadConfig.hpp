@@ -9,23 +9,22 @@
 #include <cstdint>
 #include <limits>
 #include <meta>
-#include <string_view>
+#include <string>
 
 namespace bh {
 
 enum class PadType : std::uint8_t { Drum = 0, Cymbal, Pedal };
 
-// Paths borrow Lua strings; consume them before closing the Lua state.
 struct PadConfig {
   PadType type{};
   bh::Vec3 position{};
   float radius{};
   float tilt{};
   std::size_t pedalIndex{};
-  std::string_view audio;
+  std::string audio;
   bool hasAlternate{};
   float alternateRadius{};
-  std::string_view alternateAudio;
+  std::string alternateAudio;
 };
 
 inline void registerPadTypes(::lua_State *lua) {
@@ -34,23 +33,23 @@ inline void registerPadTypes(::lua_State *lua) {
     constexpr auto padValue = [:Pad_t:];
     constexpr auto padName =
         std::define_static_string(std::meta::identifier_of(Pad_t));
-    lua_pushinteger(lua, static_cast<lua_Integer>(padValue));
-    lua_setglobal(lua, padName);
+    ::lua_pushinteger(lua, static_cast<::lua_Integer>(padValue));
+    ::lua_setglobal(lua, padName);
   }
 }
 
 // Always restore the caller's Lua stack, including on malformed fields.
 inline bool readPadConfig(::lua_State *lua, int table, PadConfig &out,
                           const char *&error) {
-  const int top = lua_gettop(lua);
+  const int top = ::lua_gettop(lua);
   struct StackGuard {
     ::lua_State *lua;
     int top;
-    ~StackGuard() { lua_settop(lua, top); }
+    ~StackGuard() { ::lua_settop(lua, top); }
   } guard{lua, top};
   out = {};
   error = nullptr;
-  table = lua_absindex(lua, table);
+  table = ::lua_absindex(lua, table);
   auto fail = [&](const char *message) {
     error = message;
     return false;
@@ -59,31 +58,33 @@ inline bool readPadConfig(::lua_State *lua, int table, PadConfig &out,
     return fail("Pad entry must be a table");
   }
   auto number = [&](int source, const char *key, float &value) {
-    lua_getfield(lua, source, key);
-    const bool numeric = lua_type(lua, -1) == LUA_TNUMBER;
+    ::lua_getfield(lua, source, key);
+    const bool numeric = ::lua_type(lua, -1) == LUA_TNUMBER;
     value = numeric ? static_cast<float>(lua_tonumber(lua, -1)) : 0.0f;
     lua_pop(lua, 1);
     return numeric && std::isfinite(value);
   };
-  auto path = [&](const char *key, std::string_view &value) {
-    lua_getfield(lua, table, key);
-    const bool string = lua_type(lua, -1) == LUA_TSTRING;
+  auto path = [&](const char *key, std::string &value) {
+    ::lua_getfield(lua, table, key);
+    const bool string = ::lua_type(lua, -1) == LUA_TSTRING;
     std::size_t length = 0;
-    const char *text = string ? lua_tolstring(lua, -1, &length) : nullptr;
-    value = text ? std::string_view{text, length} : std::string_view{};
+    const char *text = string ? ::lua_tolstring(lua, -1, &length) : nullptr;
+    // Copy the path while the Lua string is on the stack. The kit outlives the Lua
+    // state.
+    value = text ? std::string{text, length} : std::string{};
     lua_pop(lua, 1);
-    return !value.empty() && value.find('\0') == std::string_view::npos;
+    return !value.empty() && value.find('\0') == std::string::npos;
   };
   auto present = [&](const char *key) {
-    lua_getfield(lua, table, key);
+    ::lua_getfield(lua, table, key);
     const bool exists = !lua_isnil(lua, -1);
     lua_pop(lua, 1);
     return exists;
   };
-  lua_getfield(lua, table, "type");
+  ::lua_getfield(lua, table, "type");
   int integer = 0;
-  const auto type = lua_tointegerx(lua, -1, &integer);
-  const bool numericType = lua_type(lua, -1) == LUA_TNUMBER;
+  const auto type = ::lua_tointegerx(lua, -1, &integer);
+  const bool numericType = ::lua_type(lua, -1) == LUA_TNUMBER;
   lua_pop(lua, 1);
   if (!numericType || !integer || type < 0 || type > 2) {
     return fail("Pad type must be Drum, Cymbal or Pedal");
@@ -101,8 +102,8 @@ inline bool readPadConfig(::lua_State *lua, int table, PadConfig &out,
     out.pedalIndex = static_cast<std::size_t>(position) - 1;
     return true;
   }
-  lua_getfield(lua, table, "position");
-  const int position = lua_gettop(lua);
+  ::lua_getfield(lua, table, "position");
+  const int position = ::lua_gettop(lua);
   if (!lua_istable(lua, position) || !number(position, "x", out.position.x) ||
       !number(position, "y", out.position.y) ||
       !number(position, "z", out.position.z)) {
@@ -129,10 +130,6 @@ inline bool readPadConfig(::lua_State *lua, int table, PadConfig &out,
     return fail("Alternate requires a radius within the pad and an audio path");
   }
   return true;
-}
-
-inline bool canAddPad(PadType type, std::size_t sticks, std::size_t pedals) {
-  return sticks + pedals < 30 && (type != PadType::Pedal || pedals < 4);
 }
 
 } // namespace bh

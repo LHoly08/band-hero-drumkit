@@ -35,6 +35,8 @@ Vec3 detail::padAxis(Vec3 position, float tilt) noexcept {
     return {0.0f, 0.0f, 1.0f};
   }
 
+  // Positive tilt leans the normal toward the player at the XY origin. Zero tilt
+  // points straight up.
   const float inverseDistance = fastInverseSquareRoot(sumSides);
   const float lean = std::sin(tilt);
   return {-(position.x * inverseDistance) * lean,

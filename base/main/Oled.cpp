@@ -16,12 +16,17 @@ namespace bh {
 
 bh::Oled::Oled() noexcept {
 
-  ::u8g2_esp32_i2c_ctx_t i2c{};
+  static ::u8g2_esp32_i2c_ctx_t i2c{};
   constexpr std::uint8_t oledAddress = 0x3D;
 
   i2c.cfg = U8G2_ESP32_I2C_CONFIG_DEFAULT();
-  i2c.cfg.sda_pin = ::GPIO_NUM_8;
-  i2c.cfg.scl_pin = ::GPIO_NUM_9;
+#if CONFIG_IDF_TARGET_ESP32
+  i2c.cfg.sda_pin = ::GPIO_NUM_21;
+  i2c.cfg.scl_pin = ::GPIO_NUM_22;
+#else
+  i2c.cfg.sda_pin = ::GPIO_NUM_5; // D4
+  i2c.cfg.scl_pin = ::GPIO_NUM_6; // D5
+#endif
   i2c.cfg.clk_hz = 100000;
   i2c.cfg.dev_addr_7bit = oledAddress;
   i2c.cfg.reset_pin = U8G2_ESP32_PIN_UNUSED;
@@ -32,6 +37,8 @@ bh::Oled::Oled() noexcept {
                                       ::u8x8_byte_esp32_hw_i2c,
                                       ::u8x8_gpio_and_delay_esp32_i2c);
 
+  // The ESP driver takes a seven-bit address. u8g2 expects it shifted into the
+  // address byte.
   u8g2_SetI2CAddress(&m_oled, oledAddress << 1);
   u8g2_InitDisplay(&m_oled);
   u8g2_SetPowerSave(&m_oled, 0);
@@ -45,7 +52,7 @@ void bh::Oled::drawArrow(bh::State selectedState) noexcept {
       static_cast<std::uint8_t>(selectedState) -
       static_cast<std::uint8_t>(bh::State::PlayingFreestyle);
 
-  ::u8g2_DrawStr(&m_oled, 36, 2 + (line * 8), "<");
+  ::u8g2_DrawStr(&m_oled, 100, 10 + (line * 10), "<");
 }
 
 void bh::Oled::drawBase() noexcept {
@@ -65,7 +72,7 @@ void bh::Oled::drawBase() noexcept {
          }
          return std::define_static_array(names);
        }())) {
-    ::u8g2_DrawStr(&m_oled, 2, 2 + (i * 8), text);
+    ::u8g2_DrawStr(&m_oled, 2, 10 + (i * 10), text);
   }
 }
 

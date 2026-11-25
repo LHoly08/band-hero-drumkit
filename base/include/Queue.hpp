@@ -29,7 +29,7 @@ public:
   Queue &operator=(Queue &&) noexcept = delete;
 
   inline bool empty() const noexcept {
-    return (uxQueueSpacesAvailable(m_queue) == S);
+    return (::uxQueueSpacesAvailable(m_queue) == S);
   };
   template <Type type = Type::NORMAL> bool pop(T *outItem) noexcept;
   template <Type type = Type::NORMAL> bool push(T item) noexcept;
@@ -43,7 +43,7 @@ Queue<T, S>::Queue() noexcept : m_queue(xQueueCreate(S, sizeof(T))) {}
 
 template <typename T, std::size_t S> Queue<T, S>::~Queue() noexcept {
   if (m_queue != nullptr) {
-    vQueueDelete(m_queue);
+    ::vQueueDelete(m_queue);
   }
 }
 
@@ -55,12 +55,12 @@ bool Queue<T, S>::pop(T *outItem) noexcept {
   }
 
   if constexpr (type == Type::NORMAL) {
-    return (xQueueReceive(m_queue, outItem, pdMS_TO_TICKS(10)) == pdTRUE);
+    return (::xQueueReceive(m_queue, outItem, pdMS_TO_TICKS(10)) == pdTRUE);
   } else {
     ::BaseType_t success = pdFALSE;
 
     ::BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    success = xQueueReceiveFromISR(m_queue, outItem, &xHigherPriorityTaskWoken);
+    success = ::xQueueReceiveFromISR(m_queue, outItem, &xHigherPriorityTaskWoken);
     if (xHigherPriorityTaskWoken == pdTRUE) {
       portYIELD_FROM_ISR();
     }

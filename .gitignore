@@ -27,6 +27,8 @@ sdkconfig.old
 .clangd
 .vscode/
 .idea/
+.project
+.cproject
 .nvimlog
 *.swp
 *.swo

@@ -1,4 +1,5 @@
 :root {
+  scrollbar-gutter: stable;
   color-scheme: dark;
   --bg: light-dark(#f7f6fa, #17161e);
   --panel: light-dark(#fff, #22202a);
@@ -58,7 +59,13 @@ main {
 }
 
 main {
+  width: min(1580px, calc(100% - 28px));
   padding: 18px 0 28px;
+}
+
+main > * {
+  max-width: 850px;
+  margin-inline: auto;
 }
 
 h1 {
@@ -272,37 +279,6 @@ label > input:not([type="checkbox"]) {
   background: transparent;
 }
 
-dialog {
-  width: min(340px, calc(100% - 28px));
-  padding: 0;
-  color: var(--ink);
-}
-
-dialog::backdrop {
-  background: #0d0a12a8;
-}
-
-#samples-status:not(:empty) {
-  padding: 7px 10px;
-}
-
-#sample-list {
-  display: grid;
-  gap: 4px;
-  max-height: 50vh;
-  overflow: auto;
-}
-
-#sample-list:not(:empty) {
-  padding: 6px 10px;
-}
-
-#sample-list button {
-  text-align: left;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
 @media (max-width: 620px) {
   .workspace {
     grid-template-columns: 1fr;
@@ -311,4 +287,59 @@ dialog::backdrop {
   #pad-list {
     max-height: 220px;
   }
+}
+
+#kit-settings {
+  margin: 12px auto;
+  padding: 8px 10px 12px;
+}
+
+#packet-map {
+  border-top: 1px solid var(--line);
+  padding: 6px 10px;
+}
+
+#packet-map summary {
+  cursor: pointer;
+  width: fit-content;
+}
+
+#packet-map table {
+  table-layout: fixed;
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 6px;
+  font-size: .9rem;
+  text-align: left;
+}
+
+#packet-map th:first-child {
+  width: 4ch;
+}
+
+#packet-map th:nth-child(2) {
+  width: 9ch;
+}
+
+#packet-map th, #packet-map td {
+  text-align: left;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+}
+
+#packet-map button {
+  max-width: 100%;
+  min-height: 26px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+#packet-map button[aria-pressed="true"] {
+  border-color: var(--accent);
+}
+
+#unused-bits {
+  margin-top: 6px;
 }

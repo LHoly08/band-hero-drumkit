@@ -6,7 +6,7 @@
 
 namespace bh {
 
-void setup(void *context, bh::State state, ::lua_State *luaFile, bool *error,
+void setup(void *context, bh::State state, const KitConfig &kit, bool *error,
            const char *&errorString) {
   *error = false;
   errorString = nullptr;
@@ -14,8 +14,8 @@ void setup(void *context, bh::State state, ::lua_State *luaFile, bool *error,
     *error = true;
     errorString = message;
   };
-  if (!context || !luaFile) {
-    fail("Invalid setup context or Lua state");
+  if (!context) {
+    fail("Invalid setup context");
     return;
   }
   std::variant<Play<bh::State::PlayingFreestyle> *,
@@ -49,9 +49,9 @@ void setup(void *context, bh::State state, ::lua_State *luaFile, bool *error,
   ::gpio_config_t cfg{};
   cfg.pin_bit_mask = 1ULL << bh::PIN;
   cfg.mode = ::GPIO_MODE_INPUT;
-  cfg.pull_up_en = static_cast<gpio_pullup_t>(ISR_CFG::pull_up);
-  cfg.pull_down_en = static_cast<gpio_pulldown_t>(ISR_CFG::pull_down);
-  cfg.intr_type = static_cast<gpio_int_type_t>(ISR_CFG::intr_type);
+  cfg.pull_up_en = static_cast<::gpio_pullup_t>(ISR_CFG::pull_up);
+  cfg.pull_down_en = static_cast<::gpio_pulldown_t>(ISR_CFG::pull_down);
+  cfg.intr_type = static_cast<::gpio_int_type_t>(ISR_CFG::intr_type);
   ESP_ERROR_CHECK(::gpio_config(&cfg));
   std::visit(
       [&](auto *selected) {
@@ -61,9 +61,9 @@ void setup(void *context, bh::State state, ::lua_State *luaFile, bool *error,
         if constexpr (std::is_same_v<std::remove_pointer_t<decltype(selected)>,
                                      Play<bh::State::PlayingHub>>) {
           ::esp_now_peer_info_t peer{};
-          std::copy(selected->m_references.macAddress.begin(),
-                    selected->m_references.macAddress.end(), peer.peer_addr);
-          peer.ifidx = WIFI_IF_STA;
+          std::copy(kit.macAddress.begin(),
+                    kit.macAddress.end(), peer.peer_addr);
+          peer.ifidx = ::WIFI_IF_STA;
           if (::esp_now_add_peer(&peer) != ESP_OK) {
             fail("Cannot register hub peer; check MAC configuration");
           }
@@ -74,44 +74,9 @@ void setup(void *context, bh::State state, ::lua_State *luaFile, bool *error,
     return;
   }
 
-  const int top = lua_gettop(luaFile);
-  struct StackGuard {
-    ::lua_State *lua;
-    int top;
-    ~StackGuard() { lua_settop(lua, top); }
-  } guard{luaFile, top};
-  lua_getglobal(luaFile, "hit");
-  if (!lua_istable(luaFile, -1)) {
-    fail("Hit table not found");
-    return;
-  }
-  const int hit = lua_gettop(luaFile);
-  std::uint8_t usedPedals{};
-  for (lua_Integer index = 1;; ++index) {
-    lua_rawgeti(luaFile, hit, index);
-    if (lua_isnil(luaFile, -1)) {
-      break;
-    }
-    bh::PadConfig pad;
-    if (!bh::readPadConfig(luaFile, -1, pad, errorString)) {
-      *error = true;
-      return;
-    }
-    const bool room = std::visit(
-        [&](auto *selected) {
-          return bh::canAddPad(pad.type, selected->m_sticks.size(),
-                               selected->m_pedals.size());
-        },
-        play);
-    if (!room) {
-      fail("Configuration exceeds 30 pads or 4 pedals");
-      return;
-    }
-    if (pad.type == bh::PadType::Pedal &&
-        ((usedPedals << pad.pedalIndex) & 0b1)) {
-      fail("Pedal positions must be unique");
-      return;
-    }
+  // Keep Lua order within each group. Overlapping stick pads use the first match,
+  // and pedal order sets their bit positions.
+  for (const auto &pad : kit.pads) {
     bh::mp3File audio;
     if (state == bh::State::PlayingFreestyle) {
       audio = bh::mp3File{pad.audio};
@@ -121,15 +86,19 @@ void setup(void *context, bh::State state, ::lua_State *luaFile, bool *error,
       return;
     }
     if (pad.type == bh::PadType::Pedal) {
-      static constexpr std::array pins{GPIO_NUM_1, GPIO_NUM_2, GPIO_NUM_3,
-                                       GPIO_NUM_4};
+#if CONFIG_IDF_TARGET_ESP32
+      static constexpr std::array pins{::GPIO_NUM_25, ::GPIO_NUM_26, ::GPIO_NUM_27,
+                                       ::GPIO_NUM_32};
+#else
+      static constexpr std::array pins{::GPIO_NUM_1, ::GPIO_NUM_2, ::GPIO_NUM_3,
+                                       ::GPIO_NUM_4};
+#endif
       std::visit(
           [&](auto *selected) {
             selected->m_pedals.emplace_back(pins[pad.pedalIndex],
                                             std::move(audio));
           },
           play);
-      usedPedals |= (1 << pad.pedalIndex);
     } else {
       bh::mp3File alternateAudio;
       if (pad.hasAlternate && state == bh::State::PlayingFreestyle) {
@@ -167,7 +136,6 @@ void setup(void *context, bh::State state, ::lua_State *luaFile, bool *error,
         }
       }
     }
-    lua_pop(luaFile, 1);
   }
 }
 

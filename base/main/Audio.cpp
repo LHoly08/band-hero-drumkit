@@ -29,25 +29,25 @@ constexpr std::size_t blockSamples = 128;
 
   ::i2s_chan_config_t channelConfig{};
   channelConfig.id = I2S_NUM_AUTO;
-  channelConfig.role = I2S_ROLE_MASTER;
+  channelConfig.role = ::I2S_ROLE_MASTER;
   channelConfig.dma_desc_num = 4;
   channelConfig.dma_frame_num = blockSamples;
   channelConfig.auto_clear = true;
-  channelConfig.tx_destination = I2S_DESTINATION_DMA;
-  channelConfig.rx_destination = I2S_DESTINATION_DMA;
+  channelConfig.tx_destination = ::I2S_DESTINATION_DMA;
+  channelConfig.rx_destination = ::I2S_DESTINATION_DMA;
   auto result = ::i2s_new_channel(&channelConfig, &m_channel, nullptr);
   if (result == ESP_OK) {
     ::i2s_std_config_t standardConfig{};
     standardConfig.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(bh::audioSampleRate);
     standardConfig.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
-        I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO);
+        ::I2S_DATA_BIT_WIDTH_16BIT, ::I2S_SLOT_MODE_MONO);
     // The S3 duplicates each mono sample into both PCM5102 output slots.
-    standardConfig.slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
-    standardConfig.gpio_cfg.mclk = GPIO_NUM_NC;
-    standardConfig.gpio_cfg.bclk = GPIO_NUM_16;
-    standardConfig.gpio_cfg.ws = GPIO_NUM_17;
-    standardConfig.gpio_cfg.dout = GPIO_NUM_18;
-    standardConfig.gpio_cfg.din = GPIO_NUM_NC;
+    standardConfig.slot_cfg.slot_mask = ::I2S_STD_SLOT_BOTH;
+    standardConfig.gpio_cfg.mclk = ::GPIO_NUM_NC;
+    standardConfig.gpio_cfg.bclk = ::GPIO_NUM_16;
+    standardConfig.gpio_cfg.ws = ::GPIO_NUM_17;
+    standardConfig.gpio_cfg.dout = ::GPIO_NUM_18;
+    standardConfig.gpio_cfg.din = ::GPIO_NUM_NC;
     result = ::i2s_channel_init_std_mode(m_channel, &standardConfig);
   }
   if (result == ESP_OK) {
@@ -84,6 +84,8 @@ bool AudioPlayer::play(const bh::mp3File &file) noexcept {
 void AudioPlayer::stop() noexcept {
   m_running.store(false, std::memory_order_release);
   if (m_task) {
+    // Wait for the worker to finish its last I2S write before releasing the channel
+    // and queue.
     xSemaphoreTake(m_finished, portMAX_DELAY);
     m_task = nullptr;
   }
@@ -133,6 +135,8 @@ void AudioPlayer::run() noexcept {
           m_channel, reinterpret_cast<const std::uint8_t *>(output.data()) +
                          offset,
           sizeof(output) - offset, &written, 50);
+      // A timed-out write can still transfer bytes. Resume from the first unwritten
+      // byte.
       offset += written;
       if (result != ESP_OK && result != ESP_ERR_TIMEOUT) {
         ESP_LOGE(tag, "I2S write failed: %s", ::esp_err_to_name(result));

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <meta>
+#include <ranges>
 #include <string_view>
 #include <utility>
 
@@ -25,6 +26,16 @@ enum class State : std::uint32_t {
   PlayingHub,
 };
 
+constexpr const char *stateName(State state) noexcept {
+  template for (constexpr auto value : std::define_static_array(
+                    std::meta::enumerators_of(^^State))) {
+    if (state == [:value:]) {
+      return std::define_static_string(std::meta::identifier_of(value));
+    }
+  }
+  return "Unknown";
+}
+
 inline void operator++(State &s) {
   std::uint32_t value = static_cast<std::uint32_t>(s) + 1;
   constexpr std::uint32_t lastValue =
@@ -41,6 +52,21 @@ using AtomicState = std::atomic<State>;
 // State access must be atomic, but need not always be lock-free.
 
 using MAC = std::array<std::uint8_t, 6>;
+
+inline std::array<char, 8> MACToBase64(const MAC &macAddress) {
+  constexpr char alphabet[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  std::uint64_t bits{};
+  for (auto byte : macAddress | std::views::reverse) {
+    bits = (bits << 8) | byte;
+  }
+  std::array<char, 8> result;
+  for (char &digit : result) {
+    digit = alphabet[bits & 0x3F];
+    bits >>= 6;
+  }
+  return result;
+}
 
 inline constexpr std::uint32_t audioSampleRate = 24000;
 
@@ -82,7 +108,7 @@ private:
 class mp3File {
 public:
   mp3File() = default;
-  mp3File(std::string_view file) noexcept;
+  mp3File(std::string_view file, std::uint32_t maxPcmBytes = UINT32_MAX) noexcept;
   ~mp3File() noexcept;
   mp3File(const mp3File &) = delete;
   mp3File &operator=(const mp3File &) = delete;
@@ -102,7 +128,11 @@ private:
   std::uint32_t m_size{};
 };
 
+#if CONFIG_IDF_TARGET_ESP32
+constexpr ::gpio_num_t PIN = ::GPIO_NUM_23;
+#else
 constexpr ::gpio_num_t PIN = ::GPIO_NUM_20;
+#endif
 
 template <bool Pulldown> struct OppositeEdge;
 

@@ -14,7 +14,7 @@
 
 namespace bh {
 
-bh::mp3File::mp3File(std::string_view file) noexcept {
+bh::mp3File::mp3File(std::string_view file, std::uint32_t maxPcmBytes) noexcept {
   constexpr const char *tag = "mp3File";
   if (file.empty() || file.find('\0') != std::string_view::npos) {
     ESP_LOGE(tag, "Invalid file path");
@@ -36,15 +36,15 @@ bh::mp3File::mp3File(std::string_view file) noexcept {
 
   // Register only MP3, once; other live decoders may share this registration.
   static const auto registration = ::esp_mp3_dec_register();
-  if (registration != ESP_AUDIO_ERR_OK) {
+  if (registration != ::ESP_AUDIO_ERR_OK) {
     ESP_LOGE(tag, "Cannot register MP3 decoder: %d", registration);
     return;
   }
-  esp_audio_simple_dec_cfg_t cfg{};
-  cfg.dec_type = ESP_AUDIO_SIMPLE_DEC_TYPE_MP3;
-  esp_audio_simple_dec_handle_t handle{};
+  ::esp_audio_simple_dec_cfg_t cfg{};
+  cfg.dec_type = ::ESP_AUDIO_SIMPLE_DEC_TYPE_MP3;
+  ::esp_audio_simple_dec_handle_t handle{};
   const auto openResult = ::esp_audio_simple_dec_open(&cfg, &handle);
-  if (openResult != ESP_AUDIO_ERR_OK) {
+  if (openResult != ::ESP_AUDIO_ERR_OK) {
     ESP_LOGE(tag, "Cannot open MP3 decoder: %d", openResult);
     return;
   }
@@ -69,26 +69,31 @@ bh::mp3File::mp3File(std::string_view file) noexcept {
 
   std::uint32_t size = 0;
   std::uint32_t capacity = 0;
-  esp_audio_simple_dec_info_t format{};
+#if CONFIG_SPIRAM
+  constexpr auto pcmCaps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+#else
+  constexpr auto pcmCaps = MALLOC_CAP_8BIT;
+#endif
+  ::esp_audio_simple_dec_info_t format{};
   for (;;) {
     const auto count = std::fread(encoded.get(), 1, inputSize, input.get());
     if (std::ferror(input.get())) {
       ESP_LOGE(tag, "Cannot read %s", path.get());
       return;
     }
-    esp_audio_simple_dec_raw_t raw{};
+    ::esp_audio_simple_dec_raw_t raw{};
     raw.buffer = encoded.get();
     raw.len = static_cast<std::uint32_t>(count);
     raw.eos = std::feof(input.get()) != 0;
     // Also call with empty input at EOF to flush any cached final frame.
     do {
-      esp_audio_simple_dec_out_t out{};
+      ::esp_audio_simple_dec_out_t out{};
       out.buffer = frame.get();
       out.len = frameSize;
       raw.consumed = 0;
       const auto result =
           ::esp_audio_simple_dec_process(decoder.get(), &raw, &out);
-      if (result == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH &&
+      if (result == ::ESP_AUDIO_ERR_BUFF_NOT_ENOUGH &&
           out.needed_size > frameSize) {
         auto *larger = static_cast<std::uint8_t *>(
             ::heap_caps_realloc(frame.get(), out.needed_size, MALLOC_CAP_8BIT));
@@ -101,15 +106,15 @@ bh::mp3File::mp3File(std::string_view file) noexcept {
         frameSize = out.needed_size;
         continue; // Retry the same input, as required by the codec API.
       }
-      if (result != ESP_AUDIO_ERR_OK || raw.consumed > raw.len ||
+      if (result != ::ESP_AUDIO_ERR_OK || raw.consumed > raw.len ||
           out.decoded_size > out.len) {
         ESP_LOGE(tag, "MP3 decode failed: %d", result);
         return;
       }
       if (out.decoded_size) {
-        esp_audio_simple_dec_info_t info{};
+        ::esp_audio_simple_dec_info_t info{};
         if (::esp_audio_simple_dec_get_info(decoder.get(), &info) !=
-                ESP_AUDIO_ERR_OK ||
+                ::ESP_AUDIO_ERR_OK ||
             info.bits_per_sample != 16 || !info.sample_rate ||
             (info.channel != 1 && info.channel != 2) ||
             out.decoded_size % (sizeof(std::uint16_t) * info.channel) != 0 ||
@@ -119,18 +124,18 @@ bh::mp3File::mp3File(std::string_view file) noexcept {
           return;
         }
         if (!format.sample_rate && info.sample_rate != bh::audioSampleRate) {
-          esp_ae_rate_cvt_cfg_t rateConfig{};
+          ::esp_ae_rate_cvt_cfg_t rateConfig{};
           rateConfig.src_rate = info.sample_rate;
           rateConfig.dest_rate = bh::audioSampleRate;
           rateConfig.channel = 1;
           rateConfig.bits_per_sample = 16;
           rateConfig.complexity = 3;
-          rateConfig.perf_type = ESP_AE_RATE_CVT_PERF_TYPE_MEMORY;
-          esp_ae_rate_cvt_handle_t rateHandle{};
+          rateConfig.perf_type = ::ESP_AE_RATE_CVT_PERF_TYPE_MEMORY;
+          ::esp_ae_rate_cvt_handle_t rateHandle{};
           const auto rateResult =
               ::esp_ae_rate_cvt_open(&rateConfig, &rateHandle);
           resampler.reset(rateHandle);
-          if (rateResult != ESP_AE_ERR_OK || !resampler) {
+          if (rateResult != ::ESP_AE_ERR_OK || !resampler) {
             ESP_LOGE(tag, "Cannot resample MP3 from %lu to %lu Hz: %d",
                      static_cast<unsigned long>(info.sample_rate),
                      static_cast<unsigned long>(bh::audioSampleRate),
@@ -152,13 +157,13 @@ bh::mp3File::mp3File(std::string_view file) noexcept {
             std::memcpy(out.buffer + offset, &mono, sizeof(mono));
           }
         }
-        constexpr auto maxSize = std::numeric_limits<std::uint32_t>::max();
+        const auto maxSize = maxPcmBytes;
         constexpr std::uint32_t sampleBytes = sizeof(std::int16_t);
         const auto inputSamples = monoSize / sampleBytes;
         std::uint32_t outputSamples = inputSamples;
         if (resampler && ::esp_ae_rate_cvt_get_max_out_sample_num(
                              resampler.get(), inputSamples, &outputSamples) !=
-                             ESP_AE_ERR_OK) {
+                             ::ESP_AE_ERR_OK) {
           ESP_LOGE(tag, "Cannot determine resampled frame size");
           return;
         }
@@ -174,9 +179,9 @@ bh::mp3File::mp3File(std::string_view file) noexcept {
                            ? 16384u
                            : (capacity > maxSize / 2 ? maxSize : capacity * 2));
           auto *larger = static_cast<std::uint8_t *>(::heap_caps_realloc(
-              pcm.get(), nextCapacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+              pcm.get(), nextCapacity, pcmCaps));
           if (!larger) {
-            ESP_LOGE(tag, "Not enough PSRAM for decoded PCM");
+            ESP_LOGE(tag, "Not enough RAM for decoded PCM");
             return;
           }
           pcm.release();
@@ -190,7 +195,7 @@ bh::mp3File::mp3File(std::string_view file) noexcept {
           const auto rateResult = ::esp_ae_rate_cvt_process(
               resampler.get(), out.buffer, inputSamples, pcm.get() + size,
               &outputSamples);
-          if (rateResult != ESP_AE_ERR_OK || outputSamples > maxOutputSamples) {
+          if (rateResult != ::ESP_AE_ERR_OK || outputSamples > maxOutputSamples) {
             ESP_LOGE(tag, "MP3 resampling failed: %d", rateResult);
             return;
           }
@@ -221,7 +226,7 @@ bh::mp3File::mp3File(std::string_view file) noexcept {
   }
   // Shrinking is optional; keep the original allocation if it fails.
   if (auto *smaller = static_cast<std::uint8_t *>(::heap_caps_realloc(
-          pcm.get(), size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT))) {
+          pcm.get(), size, pcmCaps))) {
     pcm.release();
     pcm.reset(smaller);
   }

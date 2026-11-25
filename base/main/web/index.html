@@ -1,13 +1,16 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <meta name="color-scheme" content="dark light">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Kit configuration · Band Hero</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="style.css">
   <script defer src="app.js"></script>
 </head>
+
 <body>
   <header class="top">
     <div class="bar">
@@ -23,6 +26,16 @@
     </div>
     <p class="muted status" id="kit-status" role="status"></p>
 
+    <fieldset id="kit-settings" class="card pair" disabled>
+      <legend>Kit settings</legend>
+      <label>Hit tolerance (cm)
+        <input id="tolerance" type="number" min="0" step="any" required>
+      </label>
+      <label>Hub MAC address
+        <input id="hub-mac" type="text" placeholder="00:11:22:33:44:55" spellcheck="false" required>
+      </label>
+    </fieldset>
+
     <div class="workspace">
       <section class="card" aria-labelledby="assignments-heading">
         <header class="panel">
@@ -35,6 +48,14 @@
         </div>
         <ol id="pad-list" aria-label="Pads in matching order" hidden></ol>
         <p class="muted order-note" id="order-note" hidden>First match wins when pads overlap.</p>
+        <details id="packet-map" hidden>
+          <summary>Show packet layout</summary>
+          <table aria-label="Packet assignments in wire order">
+            <thead><tr><th>Bit</th><th>Type</th><th>Assignment</th></tr></thead>
+            <tbody id="packet-bits"></tbody>
+          </table>
+          <p id="unused-bits" class="muted"></p>
+        </details>
       </section>
 
       <section class="card" aria-labelledby="inspector-heading">
@@ -47,13 +68,16 @@
         </header>
         <p class="empty" id="inspector-empty">Select a pad to edit.</p>
         <fieldset id="pad-editor" aria-label="Selected pad settings" hidden>
-          <label class="inline" for="pad-type">Type
+          <div class="inline">
+            <label class="inline" for="pad-type">Type
             <select id="pad-type">
               <option>Drum</option>
               <option>Cymbal</option>
               <option>Pedal</option>
             </select>
-          </label>
+            </label>
+            <span class="muted" id="inspector-bit"></span>
+          </div>
 
           <div class="fields" id="stick-fields">
             <p class="muted" id="position-help">Position (m) from your chest. X right, Y forward, Z up.</p>
@@ -79,17 +103,19 @@
           </label>
 
           <div class="sample-field">
-            <label>Audio sample <input id="pad-audio" type="text" placeholder="/sdcard/sounds/sample.mp3" spellcheck="false"></label>
-            <button id="browse-audio" type="button">Browse</button>
+            <label>MP3 <input id="pad-audio" type="text" placeholder="No file assigned" readonly></label>
+            <button id="browse-audio" type="button">Upload MP3</button>
           </div>
 
           <div class="fields" id="alternate-section">
-            <label class="check"><input id="alternate-enabled" type="checkbox"> Add a second sound for the <span id="alternate-zone"></span></label>
+            <label class="check"><input id="alternate-enabled" type="checkbox"> Add a second sound for the <span
+                id="alternate-zone"></span></label>
             <div class="fields" id="alternate-fields" hidden>
               <label>Zone boundary radius (m) <input id="alternate-radius" type="number" step="any" min="0"></label>
               <div class="sample-field">
-                <label>Second audio sample <input id="alternate-audio" type="text" spellcheck="false"></label>
-                <button id="browse-alternate" type="button">Browse</button>
+                <label>Second MP3 <input id="alternate-audio" type="text" placeholder="No file assigned"
+                    readonly></label>
+                <button id="browse-alternate" type="button">Upload MP3</button>
               </div>
             </div>
           </div>
@@ -99,14 +125,7 @@
     </div>
   </main>
 
-  <dialog class="card" id="sample-dialog" aria-labelledby="sample-heading">
-    <header class="panel">
-      <h2 id="sample-heading">Audio samples</h2>
-      <form method="dialog"><button autofocus>Close</button></form>
-    </header>
-    <p class="muted" id="samples-status" role="status"></p>
-    <div id="sample-list"></div>
-  </dialog>
+  <input type="file" id="mp3-upload" accept=".mp3,audio/mpeg" hidden>
 
   <template id="pad-row">
     <li>
@@ -118,4 +137,5 @@
     </li>
   </template>
 </body>
+
 </html>
